@@ -1,0 +1,41 @@
+# vLLM model config where Gym manages the vLLM servers via Ray
+# Use this for multi-node deployments where you want Gym to handle replication
+#
+# Required env vars / Hydra overrides:
+#   - policy_model_name: Model path/name (e.g., nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
+#   - router_dp_size: Number of vLLM replicas to spin up (one per node typically)
+#   - server_tensor_parallel_size: TP size for each replica
+#
+# Example:
+#   ng_run "+config_paths=[...vllm_model_spinup.yaml]" \
+#     +policy_model_name=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+#     ++policy_model.responses_api_models.vllm_model.router_dp_size=4 \
+#     ++policy_model.responses_api_models.vllm_model.server_args.tensor_parallel_size=4
+
+policy_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      # base_url is ignored when spinup_server=true, but required by schema
+      base_url: "http://placeholder:8000/v1"
+      api_key: ${policy_api_key}
+      model: ${policy_model_name}
+      return_token_id_information: false
+      uses_reasoning_parser: true
+      
+      # Enable Gym-managed vLLM servers
+      spinup_server: true
+      
+      # Number of independent vLLM replicas (each gets its own node)
+      # Set via: ++policy_model.responses_api_models.vllm_model.router_dp_size=N
+      router_dp_size: ${router_dp_size:1}
+      
+      # vLLM server arguments (passed to each replica)
+      # Set via: ++policy_model.responses_api_models.vllm_model.server_args.tensor_parallel_size=N
+      server_args:
+        tensor_parallel_size: ${server_tensor_parallel_size:8}
+        trust_remote_code: true
+        dtype: auto
+        # Add any other vLLM args here, e.g.:
+        # enable_auto_tool_choice: true
+        # tool_call_parser: qwen3_coder

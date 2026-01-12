@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-import time
 from typing import List
 
 from fastapi import Request, Response
@@ -68,8 +67,6 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         response: Response,
         body: NeMoGymResponseCreateParamsNonStreaming = Body(),
     ) -> NeMoGymResponse:
-        responses_start_time = time.perf_counter()
-
         body = body.model_copy(deep=True)
 
         if isinstance(body.input, str):
@@ -80,26 +77,16 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         model_server_cookies = None  # update the cookies on every model response
         resources_server_cookies = request.cookies  # update the cookies on every resources server response
 
-        # Timing tracking
-        timing_info = {
-            "model_call_times": [],
-            "tool_call_times": [],
-        }
-
         while True:
             step += 1
             new_body = body.model_copy(update={"input": body.input + new_outputs})
 
-            model_call_start = time.perf_counter()
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
                 url_path="/v1/responses",
                 json=new_body,
                 cookies=model_server_cookies,
             )
-            model_call_time = time.perf_counter() - model_call_start
-            timing_info["model_call_times"].append({"step": step, "time_seconds": model_call_time})
-
             # We raise for status here since we expect model calls to always work.
             await raise_for_status(model_response)
             model_response_json = await model_response.json()
@@ -125,23 +112,12 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 break
 
             for output_function_call in all_fn_calls:
-                tool_call_start = time.perf_counter()
                 api_response = await self.server_client.post(
                     server_name=self.config.resources_server.name,
                     url_path=f"/{output_function_call.name}",
                     json=json.loads(output_function_call.arguments),
                     cookies=resources_server_cookies,
                 )
-                tool_call_time = time.perf_counter() - tool_call_start
-                timing_info["tool_call_times"].append(
-                    {
-                        "step": step,
-                        "tool_name": output_function_call.name,
-                        "call_id": output_function_call.call_id,
-                        "time_seconds": tool_call_time,
-                    }
-                )
-
                 # We don't raise for status here since it's a valid return for the API to error e.g. if the model outputs an invalid call or something.
                 resources_server_cookies = api_response.cookies
 
@@ -156,17 +132,11 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             if self.config.max_steps and step >= self.config.max_steps:
                 break
 
-        # Calculate total time
-        total_time = time.perf_counter() - responses_start_time
-        timing_info["total_time_seconds"] = total_time
-        timing_info["total_steps"] = step
-
         # Propogate any extra cookies necessary for downstream verification
         for k, v in (*resources_server_cookies.items(), *model_server_cookies.items()):
             response.set_cookie(k, v)
 
         model_response.output = new_outputs
-        model_response.metadata = {**(model_response.metadata or {}), "timing": json.dumps(timing_info)}
         return model_response
 
     async def run(self, request: Request, body: SimpleAgentRunRequest) -> SimpleAgentVerifyResponse:

@@ -89,7 +89,14 @@ class VLLMModelConfig(BaseResponsesAPIModelConfig):
     router_dp_size: int = 1
 
     def model_post_init(self, context):
-        if isinstance(self.base_url, str):
+        # Support environment variable override for dynamic multi-server URLs.
+        # GYM_VLLM_BASE_URLS can be set by NeMo-Skills GymClientScript to provide
+        # a comma-separated list of vLLM server URLs for routing.
+        # This enables multinode vLLM deployments without hardcoding URLs in config.
+        env_urls = os.environ.get("GYM_VLLM_BASE_URLS")
+        if env_urls:
+            self.base_url = [url.strip() for url in env_urls.split(",") if url.strip()]
+        elif isinstance(self.base_url, str):
             self.base_url = [self.base_url]
         return super().model_post_init(context)
 

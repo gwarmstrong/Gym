@@ -24,6 +24,7 @@ This resources server provides:
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -98,6 +99,9 @@ class NSToolsVerifyResponse(BaseVerifyResponse):
     model_config = ConfigDict(extra="allow")
 
     delegated_response: Optional[Dict[str, Any]] = None
+    # Timing metrics for tool execution (auto-logged to wandb)
+    total_tool_execution_time_seconds: float = 0.0
+    num_tool_calls: int = 0
 
 
 # ============================================================
@@ -109,6 +113,7 @@ class NSToolsResourcesServer(SimpleResourcesServer):
     config: NSToolsConfig
     tool_manager: Optional[Any] = None
     _tool_name_map: Dict[str, str] = {}  # Maps tool names to qualified names
+    _timing_by_session: Dict[str, List[dict]] = {}  # session_id -> list of timing records
 
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
@@ -159,6 +164,7 @@ class NSToolsResourcesServer(SimpleResourcesServer):
 
         Uses the nemo-gym session ID as the request_id for stateful tools.
         Returns the result as plain text for simple_agent compatibility.
+        Tracks execution timing per session for metrics reporting.
         """
         if not self.tool_manager:
             return PlainTextResponse(json.dumps({"error": "No tools configured"}))
@@ -177,11 +183,26 @@ class NSToolsResourcesServer(SimpleResourcesServer):
                 session_id = str(uuid.uuid4())
                 logger.warning(f"No session ID found, using fallback: {session_id}")
 
+            # Track execution timing
+            start_time = time.perf_counter()
+
             # Execute the tool
             result = await self.tool_manager.execute_tool(
                 raw_name=tool_name,
                 args=body,
                 extra_args={"request_id": session_id},
+            )
+
+            elapsed = time.perf_counter() - start_time
+
+            # Store timing by session for aggregation at verify time
+            if session_id not in self._timing_by_session:
+                self._timing_by_session[session_id] = []
+            self._timing_by_session[session_id].append(
+                {
+                    "tool_name": tool_name,
+                    "execution_time_seconds": elapsed,
+                }
             )
 
             # Return result as plain text to avoid double JSON serialization
@@ -197,14 +218,24 @@ class NSToolsResourcesServer(SimpleResourcesServer):
     # Verification
     # --------------------------------------------------------
 
-    async def verify(self, body: NSToolsVerifyRequest) -> NSToolsVerifyResponse:
+    async def verify(self, request: Request, body: NSToolsVerifyRequest) -> NSToolsVerifyResponse:
         """
         Verify the model's response by delegating to the configured verifier.
 
         The verifier is selected by:
         1. Per-sample `verifier_type` field (if present)
         2. Config `default_verifier` (fallback)
+
+        Also aggregates and returns tool execution timing metrics for this session.
         """
+        # Get session ID to retrieve accumulated timing
+        session_id = request.session.get(SESSION_ID_KEY)
+
+        # Retrieve and clean up timing for this session (pop to free memory)
+        tool_timings = self._timing_by_session.pop(session_id, []) if session_id else []
+        total_tool_time = sum(t["execution_time_seconds"] for t in tool_timings)
+        num_tool_calls = len(tool_timings)
+
         # Select verifier
         verifier_type = body.verifier_type or self.config.default_verifier
 
@@ -232,6 +263,8 @@ class NSToolsResourcesServer(SimpleResourcesServer):
             **body.model_dump(),
             reward=result["reward"],
             delegated_response=result,
+            total_tool_execution_time_seconds=total_tool_time,
+            num_tool_calls=num_tool_calls,
         )
 
     # --------------------------------------------------------

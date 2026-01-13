@@ -22,7 +22,14 @@ from app import (
 
 from nemo_gym.config_types import ResourcesServerRef
 from nemo_gym.openai_utils import NeMoGymResponse
-from nemo_gym.server_utils import ServerClient
+from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
+
+
+def create_mock_request(session_id: str = "test-session-id") -> MagicMock:
+    """Create a mock FastAPI Request with session."""
+    mock_request = MagicMock()
+    mock_request.session = {SESSION_ID_KEY: session_id}
+    return mock_request
 
 
 class TestApp:
@@ -113,11 +120,15 @@ class TestApp:
             expected_answer="4",
         )
 
-        result = await server.verify(verify_request)
+        mock_request = create_mock_request()
+        result = await server.verify(mock_request, verify_request)
 
         assert result.reward == 1.0
         assert result.delegated_response is not None
         assert result.delegated_response["reward"] == 1.0
+        # Verify timing metrics are included (0 since no tool calls in this test)
+        assert result.total_tool_execution_time_seconds == 0.0
+        assert result.num_tool_calls == 0
 
         # Verify the server_client.post was called with correct args
         server.server_client.post.assert_called_once()
@@ -179,7 +190,8 @@ class TestApp:
             expected_answer="4",
         )
 
-        result = await server.verify(verify_request)
+        mock_request = create_mock_request()
+        result = await server.verify(mock_request, verify_request)
 
         assert result.reward == 0.0
         call_args = server.server_client.post.call_args
@@ -232,7 +244,8 @@ class TestApp:
             expected_answer="4",
         )
 
-        await server.verify(verify_request)
+        mock_request = create_mock_request()
+        await server.verify(mock_request, verify_request)
 
         call_args = server.server_client.post.call_args
         json_data = call_args.kwargs["json"]
@@ -242,3 +255,68 @@ class TestApp:
         assert "expected_answer" in json_data
         assert "responses_create_params" in json_data
         assert "response" in json_data
+
+    async def test_verify_aggregates_timing_metrics(self) -> None:
+        """Test that verify aggregates and returns tool execution timing metrics."""
+        verifiers = {
+            "math_with_judge": ResourcesServerRef(type="resources_servers", name="math_with_judge"),
+        }
+        config = NSToolsConfig(
+            host="0.0.0.0",
+            port=8080,
+            entrypoint="",
+            name="ns_tools",
+            verifiers=verifiers,
+            default_verifier="math_with_judge",
+        )
+        server = NSToolsResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
+
+        # Simulate tool execution timing being recorded (normally done by execute_tool)
+        session_id = "test-session-with-tools"
+        server._timing_by_session[session_id] = [
+            {"tool_name": "stateful_python_code_exec", "execution_time_seconds": 0.5},
+            {"tool_name": "stateful_python_code_exec", "execution_time_seconds": 0.3},
+            {"tool_name": "stateful_python_code_exec", "execution_time_seconds": 0.2},
+        ]
+
+        mock_response = AsyncMock()
+        mock_response.json = AsyncMock(return_value={"reward": 1.0})
+        server.server_client.post = AsyncMock(return_value=mock_response)
+
+        response = NeMoGymResponse(
+            id="resp_test",
+            created_at=0.0,
+            model="dummy",
+            object="response",
+            output=[
+                {
+                    "id": "msg_test",
+                    "content": [{"annotations": [], "text": "\\boxed{4}", "type": "output_text"}],
+                    "role": "assistant",
+                    "status": "completed",
+                    "type": "message",
+                }
+            ],
+            parallel_tool_calls=True,
+            tool_choice="auto",
+            tools=[],
+        )
+
+        verify_request = NSToolsVerifyRequest(
+            responses_create_params={
+                "input": [{"role": "user", "content": "What is 2 + 2?"}],
+            },
+            response=response,
+            question="What is 2 + 2?",
+            expected_answer="4",
+        )
+
+        mock_request = create_mock_request(session_id=session_id)
+        result = await server.verify(mock_request, verify_request)
+
+        # Verify timing metrics are correctly aggregated
+        assert result.total_tool_execution_time_seconds == 1.0  # 0.5 + 0.3 + 0.2
+        assert result.num_tool_calls == 3
+
+        # Verify timing data is cleaned up after verify
+        assert session_id not in server._timing_by_session

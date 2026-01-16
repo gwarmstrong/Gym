@@ -13,8 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
+import sys
 import time
+import uuid
 from typing import List
+
+
+# Configure logger explicitly (basicConfig doesn't work when uvicorn has already configured logging)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
 
 from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
@@ -70,6 +83,16 @@ class SimpleAgent(SimpleResponsesAPIAgent):
     ) -> NeMoGymResponse:
         responses_start_time = time.perf_counter()
 
+        # Extract request ID for tracking, or generate one if not provided
+        request_id = (
+            request.headers.get("x-request-id")
+            or request.headers.get("request-id")
+            or str(uuid.uuid4())[:8]  # Short UUID for readability
+        )
+        log_prefix = f"[{request_id}] "
+
+        logger.info(f"{log_prefix}Starting gym rollout")
+
         body = body.model_copy(deep=True)
 
         if isinstance(body.input, str):
@@ -99,6 +122,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             )
             model_call_time = time.perf_counter() - model_call_start
             timing_info["model_call_times"].append({"step": step, "time_seconds": model_call_time})
+            logger.info(f"{log_prefix}Step {step}: Model call completed in {model_call_time:.3f}s")
 
             # We raise for status here since we expect model calls to always work.
             await raise_for_status(model_response)
@@ -141,14 +165,23 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                         "time_seconds": tool_call_time,
                     }
                 )
-
                 # We don't raise for status here since it's a valid return for the API to error e.g. if the model outputs an invalid call or something.
                 resources_server_cookies = api_response.cookies
 
+                tool_output = (await api_response.content.read()).decode()
                 tool_response = NeMoGymFunctionCallOutput(
                     type="function_call_output",
                     call_id=output_function_call.call_id,
-                    output=(await api_response.content.read()).decode(),
+                    output=tool_output,
+                )
+
+                # Truncate long outputs for logging
+                log_output = tool_output[:500] + "..." if len(tool_output) > 500 else tool_output
+                log_output = log_output.replace("\n", "\\n")  # Make single line for easier log parsing
+                logger.info(
+                    f"{log_prefix}Step {step}: Tool call '{output_function_call.name}' "
+                    f"(call_id={output_function_call.call_id}) completed in {tool_call_time:.3f}s | "
+                    f"status={api_response.status} | output={log_output}"
                 )
                 new_outputs.append(tool_response)
 
@@ -160,6 +193,14 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         total_time = time.perf_counter() - responses_start_time
         timing_info["total_time_seconds"] = total_time
         timing_info["total_steps"] = step
+
+        total_model_time = sum(t["time_seconds"] for t in timing_info["model_call_times"])
+        total_tool_time = sum(t["time_seconds"] for t in timing_info["tool_call_times"])
+        num_tool_calls = len(timing_info["tool_call_times"])
+        logger.info(
+            f"{log_prefix}Gym rollout completed: {step} steps, {num_tool_calls} tool calls, "
+            f"total_time={total_time:.3f}s (model={total_model_time:.3f}s, tools={total_tool_time:.3f}s)"
+        )
 
         # Propogate any extra cookies necessary for downstream verification
         for k, v in (*resources_server_cookies.items(), *model_server_cookies.items()):

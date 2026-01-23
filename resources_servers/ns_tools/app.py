@@ -78,6 +78,10 @@ class NSToolsConfig(BaseResourcesServerConfig):
     # python_tool HTTP server port (spawned automatically)
     python_tool_port: int = 8765
 
+    # Connection pool size for HTTP MCP client
+    python_tool_pool_size: int = 1024  # Support up to 64 concurrent tool calls
+    python_tool_acquire_timeout: float = 600.0  # Timeout for acquiring connection from pool
+
 
 # ============================================================
 # Run/Verify Request/Response Models
@@ -215,11 +219,15 @@ class NSToolsResourcesServer(SimpleResourcesServer):
             }
         }
 
-        # Merge in PythonTool URL override to point to our spawned HTTP server
+        # Merge in PythonTool connection pool configuration
         overrides = dict(self.config.nemo_skills_tool_overrides)
         python_tool_url = f"http://127.0.0.1:{self.config.python_tool_port}/mcp"
         overrides.setdefault("PythonTool", {})
-        overrides["PythonTool"]["client_params"] = {"base_url": python_tool_url}
+        overrides["PythonTool"]["client_params"] = {
+            "base_url": python_tool_url,
+            "pool_size": self.config.python_tool_pool_size,
+            "acquire_timeout": self.config.python_tool_acquire_timeout,
+        }
 
         self.tool_manager = ToolManager(
             module_specs=self.config.nemo_skills_tools,

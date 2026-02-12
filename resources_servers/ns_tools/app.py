@@ -17,24 +17,27 @@
 NeMo Skills Tools Resources Server.
 
 This resources server provides:
-- Integration with nemo_skills ToolManager for tool execution (e.g., PythonTool)
+- Stateful Python code execution via in-process multiprocessing (no sandbox)
 - Verification delegation to math_with_judge
 """
 
 import asyncio
+import io
 import json
 import logging
-import subprocess
-import sys
+import multiprocessing
+import signal
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from contextlib import redirect_stderr, redirect_stdout
+from typing import Any, Dict, Optional
 
-import httpx
+import numpy as np
+import pandas as pd
+import scipy
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-from nemo_skills.mcp.tool_manager import ToolManager
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, PrivateAttr
 
 from nemo_gym.base_resources_server import (
     BaseResourcesServerConfig,
@@ -48,6 +51,118 @@ from nemo_gym.server_utils import SESSION_ID_KEY
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# In-process Python execution
+# ============================================================
+
+
+def _session_worker(child_conn, max_execution_time: int):
+    """Runs forever in its own process, keeping globals between calls."""
+    exec_globals = {
+        "__builtins__": {
+            "print": print,
+            "len": len,
+            "str": str,
+            "int": int,
+            "float": float,
+            "list": list,
+            "dict": dict,
+            "tuple": tuple,
+            "set": set,
+            "min": min,
+            "max": max,
+            "sum": sum,
+            "abs": abs,
+            "range": range,
+            "enumerate": enumerate,
+            "zip": zip,
+            "__import__": __import__,
+        },
+        "np": np,
+        "numpy": np,
+        "scipy": scipy,
+        "pd": pd,
+        "pandas": pd,
+    }
+    exec_locals = {}
+    while True:
+        msg = child_conn.recv()
+        if msg["cmd"] == "exec":
+            code = msg["code"]
+            try:
+                out, err, res = _run_code_in_existing_env(code, exec_globals, exec_locals, max_execution_time)
+                child_conn.send({"ok": True, "out": out, "err": err, "res": res})
+            except Exception as e:
+                child_conn.send({"ok": False, "error": str(e)})
+        elif msg["cmd"] == "close":
+            break
+
+
+def _run_code_in_existing_env(code, globals_d, locals_d, timeout_s):
+    """Re-uses the same globals/locals dictionary between calls."""
+    stdout_capture, stderr_capture = io.StringIO(), io.StringIO()
+
+    def _handle_timeout(signum, frame):
+        raise TimeoutError("code timed-out")
+
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.alarm(timeout_s)
+    try:
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+            exec(code, globals_d, locals_d)
+            result = _get_last_expr_value(code, globals_d, locals_d)
+    finally:
+        signal.alarm(0)
+    return stdout_capture.getvalue(), stderr_capture.getvalue(), result
+
+
+def _get_last_expr_value(code: str, globals_dict: dict, locals_dict: dict):
+    """Try to evaluate the last line as a bare expression and return its repr."""
+    lines = code.strip().split("\n")
+    if not lines:
+        return None
+
+    last_line = lines[-1].strip()
+
+    if last_line.startswith(("print", "import", "from", "def", "class", "if", "for", "while", "try", "with")):
+        return None
+
+    try:
+        return str(eval(last_line, globals_dict, locals_dict))
+    except Exception:
+        return None
+
+
+class _SessionHandle:
+    """Light wrapper around one long-lived worker process."""
+
+    def __init__(self, max_execution_time: int):
+        parent_conn, child_conn = multiprocessing.Pipe()
+        self._conn = parent_conn
+        self._proc = multiprocessing.Process(
+            target=_session_worker,
+            args=(child_conn, max_execution_time),
+            daemon=True,
+        )
+        self._proc.start()
+        self.last_used = time.time()
+
+    def exec(self, code: str):
+        self._conn.send({"cmd": "exec", "code": code})
+        reply = self._conn.recv()
+        self.last_used = time.time()
+        if reply["ok"]:
+            return reply["out"], reply["err"], reply["res"]
+        raise RuntimeError(reply["error"])
+
+    def close(self):
+        try:
+            self._conn.send({"cmd": "close"})
+        except (BrokenPipeError, EOFError):
+            pass
+        self._proc.join(timeout=1)
 
 
 # ============================================================
@@ -65,25 +180,11 @@ class NSToolsConfig(BaseResourcesServerConfig):
     # At minimum, should include math_with_judge
     verifiers: Dict[str, ResourcesServerRef] = Field(default_factory=dict)
 
-    # NeMo Skills tool modules to load (e.g., "nemo_skills.mcp.servers.python_tool.PythonTool")
-    nemo_skills_tools: List[str] = Field(default_factory=list)
-
-    # Per-tool overrides for nemo_skills tools
-    nemo_skills_tool_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-
-    # Sandbox configuration for code execution tools
-    sandbox_host: str = "127.0.0.1"
-    sandbox_port: str = "6000"
-
-    # python_tool HTTP server port (spawned automatically)
-    python_tool_port: int = 8765
+    # Max execution time per code cell (seconds)
+    max_execution_time: int = 10
 
     # Verbose logging for tool execution timing (disabled by default)
     verbose_tool_logging: bool = False
-
-    # When True, skip replaying session history after sandbox worker restarts.
-    # The model receives a warning in stderr instead of restored state.
-    disable_session_restore: bool = False
 
 
 # ============================================================
@@ -117,8 +218,7 @@ class NSToolsVerifyResponse(BaseVerifyResponse):
     total_tool_execution_time_seconds: float = 0.0
     num_tool_calls: int = 0
     avg_tool_call_time_seconds: float = 0.0
-    tool_timeout_count: int = 0  # Internal sandbox timeouts (process_status == "timeout")
-    tool_request_timeout_count: int = 0  # HTTP/request-level timeouts
+    tool_timeout_count: int = 0
 
 
 # ============================================================
@@ -128,154 +228,24 @@ class NSToolsVerifyResponse(BaseVerifyResponse):
 
 class NSToolsResourcesServer(SimpleResourcesServer):
     config: NSToolsConfig
-    tool_manager: Optional[Any] = None
-    _tool_name_map: Dict[str, str] = {}  # Maps tool names to qualified names
-    _python_tool_process: Optional[subprocess.Popen] = None
-    _timing_by_session: Dict[str, list] = {}  # session_id -> list of timing records
+
+    _sessions: Dict[str, _SessionHandle] = PrivateAttr(default_factory=dict)
+    _timing_by_session: Dict[str, list] = PrivateAttr(default_factory=dict)
 
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
-
-        # Initialize nemo_skills ToolManager if tools are configured
-        if self.config.nemo_skills_tools:
-            # Start the python_tool HTTP server first
-            self._start_python_tool_server()
-            self._initialize_nemo_skills_tools()
-
-            # Register a catch-all endpoint for tool execution
-            # This handles any tool name dynamically
-            app.post("/{tool_name}")(self.execute_tool)
-
+        app.post("/stateful_python_code_exec")(self.execute_tool)
+        app.post("/end_session")(self.end_session)
         return app
 
-    def _start_python_tool_server(self):
-        """Spawn python_tool HTTP server as a subprocess."""
-        logger.info(f"Starting python_tool HTTP server on port {self.config.python_tool_port}")
-
-        # Build command with sandbox config
-        cmd = [
-            sys.executable,
-            "-m",
-            "nemo_skills.mcp.servers.python_tool",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(self.config.python_tool_port),
-            "--sandbox-host",
-            self.config.sandbox_host,
-            "--sandbox-port",
-            str(self.config.sandbox_port),
-        ]
-        if self.config.disable_session_restore:
-            cmd.append("--disable-session-restore")
-        logger.info(f"python_tool command: {' '.join(cmd)}")
-
-        # Don't pipe stdout/stderr so we can see output directly in logs
-        self._python_tool_process = subprocess.Popen(cmd)
-
-        # Wait for server to be ready
-        self._wait_for_server_ready()
-        logger.info(f"python_tool HTTP server started (PID: {self._python_tool_process.pid})")
-
-    def _wait_for_server_ready(self, timeout: float = 30.0, poll_interval: float = 0.5):
-        """Wait for the python_tool HTTP server to be ready."""
-        url = f"http://127.0.0.1:{self.config.python_tool_port}/mcp"
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            # Check if process died
-            if self._python_tool_process.poll() is not None:
-                raise RuntimeError(
-                    f"python_tool server died during startup (exit code: {self._python_tool_process.returncode}). "
-                    f"Check logs above for details."
-                )
-
-            try:
-                # Try to connect to the server
-                with httpx.Client(timeout=2.0) as client:
-                    # MCP servers respond to POST on /mcp, but we can check if the port is open
-                    # by attempting a connection. The server might return an error, but that's fine.
-                    response = client.post(url, json={})
-                    # Any response means server is up
-                    logger.info(f"python_tool server is ready (status: {response.status_code})")
-                    return
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                # Server not ready yet
-                time.sleep(poll_interval)
-            except Exception as e:
-                # Other errors might indicate server is up but returned an error - that's ok
-                logger.info(f"python_tool server responded with error (server is ready): {e}")
-                return
-
-        # Terminate the process if still running
-        if self._python_tool_process.poll() is None:
-            self._python_tool_process.terminate()
-            self._python_tool_process.wait(timeout=5)
-        raise TimeoutError(f"python_tool server did not start within {timeout}s. Check logs above for details.")
-
-    def _initialize_nemo_skills_tools(self):
-        """Initialize the nemo_skills ToolManager with configured tools."""
-
-        # Reduce verbosity of MCP and httpx loggers (they log every HTTP request at INFO)
-        for noisy_logger in [
-            "mcp.server.streamable_http_manager",
-            "mcp.server.streamable_http",
-            "mcp.server.lowlevel.server",
-            "mcp.server",
-            "mcp.client.streamable_http",
-            "httpx",
-        ]:
-            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-
-        logger.info(f"Initializing NeMo Skills ToolManager with tools: {self.config.nemo_skills_tools}")
-
-        context = {
-            "sandbox": {
-                "sandbox_type": "local",
-                "host": self.config.sandbox_host,
-                "port": self.config.sandbox_port,
-            }
-        }
-
-        # Merge in PythonTool URL override to point to our spawned HTTP server
-        overrides = dict(self.config.nemo_skills_tool_overrides)
-        python_tool_url = f"http://127.0.0.1:{self.config.python_tool_port}/mcp"
-        overrides.setdefault("PythonTool", {})
-        overrides["PythonTool"]["client_params"] = {"base_url": python_tool_url}
-
-        self.tool_manager = ToolManager(
-            module_specs=self.config.nemo_skills_tools,
-            overrides=overrides,
-            context=context,
-        )
-
-        # Load tools and build name mapping
-        async def _load_tools():
-            tools = await self.tool_manager.list_all_tools()
-            for tool in tools:
-                self._tool_name_map[tool["name"]] = tool["name"]
-            logger.info(f"Loaded {len(tools)} nemo_skills tools: {list(self._tool_name_map.keys())}")
-
-        asyncio.get_event_loop().run_until_complete(_load_tools())
-        logger.info("NeMo Skills ToolManager initialized successfully")
-
-    async def execute_tool(self, tool_name: str, request: Request) -> PlainTextResponse:
+    async def execute_tool(self, request: Request) -> PlainTextResponse:
         """
-        Execute a nemo_skills tool by name.
+        Execute Python code in a stateful per-session worker process.
 
-        Uses the nemo-gym session ID as the request_id for stateful tools.
+        Uses the nemo-gym session ID to maintain state across tool calls.
         Returns the result as plain text for simple_agent compatibility.
         Tracks execution timing and timeout detection per session.
         """
-        if not self.tool_manager:
-            return PlainTextResponse(json.dumps({"error": "No tools configured"}))
-
-        # Check if tool is in our known tools
-        if tool_name not in self._tool_name_map:
-            logger.error(f"Unknown tool requested: {tool_name}")
-            return PlainTextResponse(json.dumps({"error": f"Unknown tool: {tool_name}"}))
-
-        # Get session ID for stateful execution
         session_id = request.session.get(SESSION_ID_KEY)
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -284,63 +254,63 @@ class NSToolsResourcesServer(SimpleResourcesServer):
         if session_id not in self._timing_by_session:
             self._timing_by_session[session_id] = []
 
+        body = await request.json()
+        code = body.get("code", "")
+
         start_time = time.perf_counter()
-        is_internal_timeout = False
-        is_request_timeout = False
-        result = None
+        is_timeout = False
 
         try:
-            body = await request.json()
+            if session_id not in self._sessions:
+                self._sessions[session_id] = _SessionHandle(self.config.max_execution_time)
+            handle = self._sessions[session_id]
 
-            # Execute the tool
-            result = await self.tool_manager.execute_tool(
-                raw_name=tool_name,
-                args=body,
-                extra_args={"request_id": session_id},
-            )
+            loop = asyncio.get_running_loop()
+            stdout, stderr, result = await loop.run_in_executor(None, handle.exec, code)
 
-            # Check for internal sandbox timeout (process_status == "timeout")
-            try:
-                if isinstance(result, str):
-                    result_dict = json.loads(result)
-                elif isinstance(result, dict):
-                    result_dict = result
-                else:
-                    result_dict = {}
-                is_internal_timeout = result_dict.get("process_status") == "timeout"
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
-
-        except (httpx.TimeoutException, TimeoutError) as e:
-            is_request_timeout = True
-            logger.warning(f"Request timeout executing tool {tool_name}: {e}")
-            result = {"error": "Request timeout", "process_status": "timeout"}
-
+            response_data = {
+                "success": True,
+                "stdout": stdout,
+                "stderr": stderr,
+                "result": result,
+            }
+        except TimeoutError as e:
+            is_timeout = True
+            response_data = {
+                "success": False,
+                "stdout": "",
+                "stderr": "",
+                "error_message": str(e),
+            }
         except Exception as e:
-            logger.exception(f"Error executing tool {tool_name}: {e}")
-            result = {"error": str(e)}
+            response_data = {
+                "success": False,
+                "stdout": "",
+                "stderr": "",
+                "error_message": str(e),
+            }
 
         elapsed = time.perf_counter() - start_time
         self._timing_by_session[session_id].append(
             {
-                "tool_name": tool_name,
+                "tool_name": "stateful_python_code_exec",
                 "execution_time_seconds": elapsed,
-                "is_internal_timeout": is_internal_timeout,
-                "is_request_timeout": is_request_timeout,
+                "is_internal_timeout": is_timeout,
             }
         )
         if self.config.verbose_tool_logging:
-            timeout_info = ""
-            if is_internal_timeout:
-                timeout_info = " [INTERNAL_TIMEOUT]"
-            elif is_request_timeout:
-                timeout_info = " [REQUEST_TIMEOUT]"
-            logger.info(f"Tool '{tool_name}' executed in {elapsed:.3f}s{timeout_info} (session={session_id[:8]}...)")
+            timeout_info = " [TIMEOUT]" if is_timeout else ""
+            logger.info(f"Tool executed in {elapsed:.3f}s{timeout_info} (session={session_id[:8]}...)")
 
-        # Return result as plain text to avoid double JSON serialization
-        if isinstance(result, str):
-            return PlainTextResponse(result)
-        return PlainTextResponse(json.dumps(result))
+        return PlainTextResponse(json.dumps(response_data))
+
+    async def end_session(self, request: Request) -> PlainTextResponse:
+        """Clean up a session's worker process."""
+        session_id = request.session.get(SESSION_ID_KEY)
+        if session_id and session_id in self._sessions:
+            self._sessions[session_id].close()
+            del self._sessions[session_id]
+        return PlainTextResponse(json.dumps({"success": True}))
 
     # --------------------------------------------------------
     # Verification
@@ -354,14 +324,12 @@ class NSToolsResourcesServer(SimpleResourcesServer):
         num_tool_calls = len(tool_timings)
         avg_tool_time = total_tool_time / num_tool_calls if num_tool_calls > 0 else 0.0
         tool_timeout_count = sum(1 for t in tool_timings if t.get("is_internal_timeout"))
-        tool_request_timeout_count = sum(1 for t in tool_timings if t.get("is_request_timeout"))
 
         return {
             "total_tool_execution_time_seconds": total_tool_time,
             "num_tool_calls": num_tool_calls,
             "avg_tool_call_time_seconds": avg_tool_time,
             "tool_timeout_count": tool_timeout_count,
-            "tool_request_timeout_count": tool_request_timeout_count,
         }
 
     async def verify(self, request: Request, body: NSToolsVerifyRequest) -> NSToolsVerifyResponse:
@@ -377,12 +345,18 @@ class NSToolsResourcesServer(SimpleResourcesServer):
         """
         session_id = request.session.get(SESSION_ID_KEY) if request else None
         metrics = self._aggregate_timing_metrics(session_id)
+
+        # Clean up session worker
+        if session_id and session_id in self._sessions:
+            self._sessions[session_id].close()
+            del self._sessions[session_id]
+
         if self.config.verbose_tool_logging:
             logger.info(
                 f"Session {session_id[:8] if session_id else 'unknown'}... metrics: "
                 f"{metrics['num_tool_calls']} tool calls, total={metrics['total_tool_execution_time_seconds']:.3f}s, "
                 f"avg={metrics['avg_tool_call_time_seconds']:.3f}s, "
-                f"internal_timeouts={metrics['tool_timeout_count']}, request_timeouts={metrics['tool_request_timeout_count']}"
+                f"timeouts={metrics['tool_timeout_count']}"
             )
 
         # Select verifier
@@ -414,26 +388,6 @@ class NSToolsResourcesServer(SimpleResourcesServer):
             delegated_response=result,
             **metrics,
         )
-
-    # --------------------------------------------------------
-    # Cleanup
-    # --------------------------------------------------------
-
-    async def shutdown(self):
-        """Cleanup resources on server shutdown."""
-        if self.tool_manager:
-            await self.tool_manager.shutdown()
-
-        # Terminate the python_tool subprocess
-        if self._python_tool_process:
-            logger.info(f"Terminating python_tool server (PID: {self._python_tool_process.pid})")
-            self._python_tool_process.terminate()
-            try:
-                self._python_tool_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("python_tool server did not terminate gracefully, killing...")
-                self._python_tool_process.kill()
-            self._python_tool_process = None
 
 
 if __name__ == "__main__":

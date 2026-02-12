@@ -1,2 +1,4 @@
 -e nemo-gym[dev] @ ../../
-nemo-skills @ git+https://github.com/NVIDIA-NeMo/Skills.git@georgea/super-rl-02062026
+numpy
+scipy
+pandas

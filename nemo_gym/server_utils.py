@@ -157,13 +157,20 @@ async def request(
         try:
             return await client.request(method=method, url=url, **kwargs)
         except ServerDisconnectedError:
+            if _internal:
+                if num_tries == 1 or num_tries % 5 == 0:
+                    print(f"[DIAG] _internal ServerDisconnectedError to {url} (attempt {num_tries})", flush=True)
+            num_tries += 1
             await asyncio.sleep(0.5)
         except Exception as e:
             if _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG:
                 print_exc()
 
-            # Don't increment internal since we know we are ok. If we are not, the head server will shut everything down anyways.
-            if not _internal:
+            if _internal:
+                if num_tries == 1 or num_tries % 5 == 0:
+                    print(f"[DIAG] _internal {type(e).__name__} to {url} (attempt {num_tries}): {e}", flush=True)
+                num_tries += 1
+            else:
                 print(
                     f"""Hit an exception while making a request (try {num_tries}): {type(e)}: {e}
 Sleeping 0.5s and retrying...

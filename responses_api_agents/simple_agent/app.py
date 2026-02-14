@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import json
+import logging
 from typing import List
 
 from fastapi import Request, Response
@@ -29,6 +31,7 @@ from nemo_gym.base_responses_api_agent import (
     SimpleResponsesAPIAgent,
 )
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
+from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import (
     NeMoGymEasyInputMessage,
     NeMoGymFunctionCallOutput,
@@ -38,6 +41,8 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseOutputMessage,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
+
+logger = logging.getLogger(__name__)
 
 
 class SimpleAgentConfig(BaseResponsesAPIAgentConfig):
@@ -60,6 +65,40 @@ class SimpleAgentVerifyResponse(BaseVerifyResponse):
 
 class SimpleAgent(SimpleResponsesAPIAgent):
     config: SimpleAgentConfig
+    _tool_call_timeout: float = None
+
+    def setup_webserver(self):
+        app = super().setup_webserver()
+
+        # Read max_execution_time from the resources server config and set tool call timeout.
+        # This prevents zombie aiohttp connections from hanging tool calls indefinitely.
+        try:
+            rs_config = get_first_server_config_dict(
+                self.server_client.global_config_dict,
+                self.config.resources_server.name,
+            )
+            max_exec_time = rs_config.get("max_execution_time", None)
+            if max_exec_time is not None:
+                self._tool_call_timeout = float(max_exec_time) + 5.0
+                logger.info(f"Tool call timeout set to {self._tool_call_timeout}s (max_execution_time={max_exec_time} + 5)")
+            else:
+                logger.info("No max_execution_time in resources server config, tool call timeout disabled")
+        except Exception as e:
+            logger.warning(f"Could not read max_execution_time from config: {e}")
+
+        return app
+
+    async def _tool_call_with_timeout(self, output_function_call, resources_server_cookies):
+        """Execute a tool call with optional timeout to prevent zombie connection hangs."""
+        coro = self.server_client.post(
+            server_name=self.config.resources_server.name,
+            url_path=f"/{output_function_call.name}",
+            json=json.loads(output_function_call.arguments),
+            cookies=resources_server_cookies,
+        )
+        if self._tool_call_timeout is not None:
+            return await asyncio.wait_for(coro, timeout=self._tool_call_timeout)
+        return await coro
 
     async def responses(
         self,
@@ -112,12 +151,18 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 break
 
             for output_function_call in all_fn_calls:
-                api_response = await self.server_client.post(
-                    server_name=self.config.resources_server.name,
-                    url_path=f"/{output_function_call.name}",
-                    json=json.loads(output_function_call.arguments),
-                    cookies=resources_server_cookies,
-                )
+                try:
+                    api_response = await self._tool_call_with_timeout(output_function_call, resources_server_cookies)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Tool call {output_function_call.name} timed out after {self._tool_call_timeout}s")
+                    tool_response = NeMoGymFunctionCallOutput(
+                        type="function_call_output",
+                        call_id=output_function_call.call_id,
+                        output=json.dumps({"success": False, "error_message": f"Tool call timed out after {self._tool_call_timeout}s"}),
+                    )
+                    new_outputs.append(tool_response)
+                    continue
+
                 # We don't raise for status here since it's a valid return for the API to error e.g. if the model outputs an invalid call or something.
                 resources_server_cookies = api_response.cookies
 

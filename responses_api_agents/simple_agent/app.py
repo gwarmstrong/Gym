@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import json
+import logging
 from typing import List
 
 from fastapi import Request, Response
@@ -40,10 +42,17 @@ from nemo_gym.openai_utils import (
 from nemo_gym.server_utils import get_response_json, raise_for_status
 
 
+logger = logging.getLogger(__name__)
+
+
 class SimpleAgentConfig(BaseResponsesAPIAgentConfig):
     resources_server: ResourcesServerRef
     model_server: ModelServerRef
     max_steps: int = None
+    tool_call_timeout: float = None  # seconds per tool call; None = no timeout
+    tool_call_retries: int = (
+        1  # total attempts per tool call; 1 = no retry (original behavior). Set tool_call_timeout when increasing.
+    )
 
 
 class SimpleAgentRunRequest(BaseRunRequest):
@@ -112,12 +121,42 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 break
 
             for output_function_call in all_fn_calls:
-                api_response = await self.server_client.post(
-                    server_name=self.config.resources_server.name,
-                    url_path=f"/{output_function_call.name}",
-                    json=json.loads(output_function_call.arguments),
-                    cookies=resources_server_cookies,
-                )
+                # Retry loop only retries on asyncio.TimeoutError (zombie connection hangs).
+                # All other errors (invalid call, server error, etc.) pass through immediately
+                # as they did in the original code (tool_call_retries=1 preserves that behavior).
+                last_timeout_err = None
+                for attempt in range(1, self.config.tool_call_retries + 1):
+                    try:
+                        coro = self.server_client.post(
+                            server_name=self.config.resources_server.name,
+                            url_path=f"/{output_function_call.name}",
+                            json=json.loads(output_function_call.arguments),
+                            cookies=resources_server_cookies,
+                        )
+                        if self.config.tool_call_timeout is not None:
+                            api_response = await asyncio.wait_for(coro, timeout=self.config.tool_call_timeout)
+                        else:
+                            api_response = await coro
+                        last_timeout_err = None
+                        break
+                    except asyncio.TimeoutError:
+                        last_timeout_err = (
+                            f"timed out after {self.config.tool_call_timeout}s"
+                            f" (attempt {attempt}/{self.config.tool_call_retries})"
+                        )
+                        logger.warning(f"Tool call {output_function_call.name} {last_timeout_err}")
+
+                if last_timeout_err is not None:
+                    tool_response = NeMoGymFunctionCallOutput(
+                        type="function_call_output",
+                        call_id=output_function_call.call_id,
+                        output=json.dumps(
+                            {"success": False, "error_message": f"Tool call failed: {last_timeout_err}"}
+                        ),
+                    )
+                    new_outputs.append(tool_response)
+                    continue
+
                 # We don't raise for status here since it's a valid return for the API to error e.g. if the model outputs an invalid call or something.
                 resources_server_cookies = api_response.cookies
 

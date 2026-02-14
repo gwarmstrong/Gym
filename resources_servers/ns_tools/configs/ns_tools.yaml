@@ -49,6 +49,8 @@ ns_tools_simple_agent:
   responses_api_agents:
     simple_agent:
       entrypoint: app.py
+      tool_call_timeout: 15  # seconds per tool call; prevents zombie aiohttp connection hangs
+      tool_call_retries: 3   # total attempts; only retries on timeout (requires tool_call_timeout)
       resources_server:
         type: resources_servers
         name: ns_tools

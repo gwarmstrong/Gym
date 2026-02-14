@@ -15,6 +15,7 @@
 import asyncio
 import atexit
 import json
+import faulthandler
 import resource
 import sys
 from abc import abstractmethod
@@ -635,6 +636,11 @@ Full body: {json.dumps(exc.body, indent=4)}
             uvicorn_kwargs["app"] = app
 
         if is_main_fastapi_proc:
+            # DIAGNOSTIC: Enable faulthandler so SIGUSR1 dumps tracebacks
+            faulthandler.enable()
+            import signal
+            faulthandler.register(signal.SIGUSR1, all_threads=True)
+            print("[DIAG] faulthandler enabled - send SIGUSR1 to dump all thread tracebacks", flush=True)
             uvicorn.run(**uvicorn_kwargs)
 
         return app

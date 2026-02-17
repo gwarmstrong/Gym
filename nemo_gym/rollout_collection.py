@@ -14,6 +14,8 @@
 # limitations under the License.
 import asyncio
 import json
+import sys
+import time
 from asyncio import Future, Semaphore
 from collections import Counter
 from contextlib import nullcontext
@@ -35,6 +37,76 @@ from nemo_gym.server_utils import (
     raise_for_status,
     set_global_aiohttp_client,
 )
+
+
+STALL_CHECK_INTERVAL = 30  # seconds between watchdog checks
+STALL_TIMEOUT = 120  # seconds of zero progress before dumping
+
+# Shared counter for stall detection — incremented by _post_subroutine wrappers
+_completed_count = 0
+_total_count = 0
+
+
+def _dump_asyncio_tasks():
+    """Dump stack traces of all pending asyncio tasks to stderr."""
+    tasks = asyncio.all_tasks()
+    pending = [t for t in tasks if not t.done()]
+    print(f"[STALL-DETECTED] {len(pending)} pending asyncio tasks:", file=sys.stderr, flush=True)
+    for i, task in enumerate(pending):
+        coro = task.get_coro()
+        name = task.get_name()
+        print(f"  Task #{i} name={name} coro={coro}", file=sys.stderr, flush=True)
+        task.print_stack(file=sys.stderr)
+    sys.stderr.flush()
+
+
+async def _stall_watchdog():
+    """Background watchdog that detects zero-progress stalls and dumps asyncio tasks."""
+    last_count = 0
+    last_progress_time = time.monotonic()
+    while True:
+        await asyncio.sleep(STALL_CHECK_INTERVAL)
+        current = _completed_count
+        total = _total_count
+        now = time.monotonic()
+        if current > last_count:
+            last_count = current
+            last_progress_time = now
+        elif now - last_progress_time >= STALL_TIMEOUT:
+            elapsed = now - last_progress_time
+            print(
+                f"\n[STALL-DETECTED] No progress for {elapsed:.0f}s. Completed {current}/{total} rollouts.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _dump_asyncio_tasks()
+            # Reset timer so we dump again only after another STALL_TIMEOUT
+            last_progress_time = now
+
+
+async def _stall_detecting_gather(coroutines: List, desc: str = "Collecting rollouts", miniters: int = 10):
+    """Wrap tqdm.gather with a watchdog that detects zero-progress stalls."""
+    global _completed_count, _total_count
+    _completed_count = 0
+    _total_count = len(coroutines)
+
+    async def _tracked(coro):
+        global _completed_count
+        result = await coro
+        _completed_count += 1
+        return result
+
+    tracked = [_tracked(c) for c in coroutines]
+    watchdog_task = asyncio.create_task(_stall_watchdog(), name="stall-watchdog")
+    try:
+        results = await tqdm.gather(*tracked, desc=desc, miniters=miniters)
+    finally:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+    return results
 
 
 class RolloutCollectionConfig(BaseNeMoGymCLIConfig):
@@ -139,7 +211,8 @@ class RolloutCollectionHelper(BaseModel):  # pragma: no cover
                         result[TASK_INDEX_KEY_NAME] = row[TASK_INDEX_KEY_NAME]
                     f.write(json.dumps(result) + "\n")
 
-            await tqdm.gather(*map(_post_coroutine, rows), desc="Collecting rollouts", miniters=tqdm_miniters)
+            coroutines = list(map(_post_coroutine, rows))
+            await _stall_detecting_gather(coroutines, desc="Collecting rollouts", miniters=tqdm_miniters)
 
         avg_metrics = {k: v / len(rows) for k, v in metrics.items()}
         avg_metrics.setdefault("reward", 0.0)
@@ -150,13 +223,27 @@ class RolloutCollectionHelper(BaseModel):  # pragma: no cover
     ) -> Iterator[Future]:
         """
         We provide this function as a lower level interface for running rollout collection.
+
+        Includes a stall-detection watchdog that dumps asyncio task stacks
+        if no rollouts complete for STALL_TIMEOUT seconds.
         """
+        global _completed_count, _total_count
+        _completed_count = 0
+        _total_count = len(examples)
+
         server_client = self.setup_server_client(head_server_config)
 
         async def _post_subroutine(row: Dict) -> Tuple[Dict, Dict]:
+            global _completed_count
             res = await server_client.post(server_name=row["agent_ref"]["name"], url_path="/run", json=row)
             await raise_for_status(res)
-            return row, await get_response_json(res)
+            result = row, await get_response_json(res)
+            _completed_count += 1
+            return result
+
+        # Start stall watchdog — it will be cancelled when the event loop shuts down
+        # or when the caller's task completes.
+        asyncio.ensure_future(_stall_watchdog()).add_done_callback(lambda f: None)
 
         return tqdm.as_completed(
             map(_post_subroutine, examples), desc="Collecting rollouts", miniters=10, total=len(examples)

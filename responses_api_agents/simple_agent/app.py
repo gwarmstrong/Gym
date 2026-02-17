@@ -15,7 +15,9 @@
 import asyncio
 import json
 import logging
+import time
 from typing import List
+from uuid import uuid4
 
 from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
@@ -41,6 +43,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseOutputMessage,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
+
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,9 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             max_exec_time = rs_config.get("max_execution_time", None)
             if max_exec_time is not None:
                 self._tool_call_timeout = float(max_exec_time) + 5.0
-                logger.info(f"Tool call timeout set to {self._tool_call_timeout}s (max_execution_time={max_exec_time} + 5)")
+                logger.info(
+                    f"Tool call timeout set to {self._tool_call_timeout}s (max_execution_time={max_exec_time} + 5)"
+                )
             else:
                 logger.info("No max_execution_time in resources server config, tool call timeout disabled")
         except Exception as e:
@@ -107,6 +112,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         body: NeMoGymResponseCreateParamsNonStreaming = Body(),
     ) -> NeMoGymResponse:
         body = body.model_copy(deep=True)
+        sid = request.session.get("session_id", uuid4().hex[:8])
 
         if isinstance(body.input, str):
             body.input = [NeMoGymEasyInputMessage(role="user", content=body.input)]
@@ -120,12 +126,15 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             step += 1
             new_body = body.model_copy(update={"input": body.input + new_outputs})
 
+            t0 = time.monotonic()
+            print(f"[STEP] {sid} step {step} model_call START", flush=True)
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
                 url_path="/v1/responses",
                 json=new_body,
                 cookies=model_server_cookies,
             )
+            print(f"[STEP] {sid} step {step} model_call DONE ({time.monotonic() - t0:.1f}s)", flush=True)
             # We raise for status here since we expect model calls to always work.
             await raise_for_status(model_response)
             model_response_json = await get_response_json(model_response)
@@ -150,6 +159,8 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             if not all_fn_calls and all_output_messages:
                 break
 
+            t0 = time.monotonic()
+            print(f"[STEP] {sid} step {step} tool_calls START ({len(all_fn_calls)} calls)", flush=True)
             for output_function_call in all_fn_calls:
                 try:
                     api_response = await self._tool_call_with_timeout(output_function_call, resources_server_cookies)
@@ -158,7 +169,12 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                     tool_response = NeMoGymFunctionCallOutput(
                         type="function_call_output",
                         call_id=output_function_call.call_id,
-                        output=json.dumps({"success": False, "error_message": f"Tool call timed out after {self._tool_call_timeout}s"}),
+                        output=json.dumps(
+                            {
+                                "success": False,
+                                "error_message": f"Tool call timed out after {self._tool_call_timeout}s",
+                            }
+                        ),
                     )
                     new_outputs.append(tool_response)
                     continue
@@ -172,6 +188,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                     output=(await api_response.content.read()).decode(),
                 )
                 new_outputs.append(tool_response)
+            print(f"[STEP] {sid} step {step} tool_calls DONE ({time.monotonic() - t0:.1f}s)", flush=True)
 
             # Check if max steps is not None and if we have exhausted it.
             if self.config.max_steps and step >= self.config.max_steps:
@@ -186,7 +203,10 @@ class SimpleAgent(SimpleResponsesAPIAgent):
 
     async def run(self, request: Request, body: SimpleAgentRunRequest) -> SimpleAgentVerifyResponse:
         cookies = request.cookies
+        sid = uuid4().hex[:8]
 
+        t0 = time.monotonic()
+        print(f"[PHASE] {sid} seed_session START", flush=True)
         seed_session_response = await self.server_client.post(
             server_name=self.config.resources_server.name,
             url_path="/seed_session",
@@ -195,7 +215,10 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         )
         await raise_for_status(seed_session_response)
         cookies = seed_session_response.cookies
+        print(f"[PHASE] {sid} seed_session DONE ({time.monotonic() - t0:.1f}s)", flush=True)
 
+        t0 = time.monotonic()
+        print(f"[PHASE] {sid} responses START", flush=True)
         response = await self.server_client.post(
             server_name=self.config.name,
             url_path="/v1/responses",
@@ -204,7 +227,10 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         )
         await raise_for_status(response)
         cookies = response.cookies
+        print(f"[PHASE] {sid} responses DONE ({time.monotonic() - t0:.1f}s)", flush=True)
 
+        t0 = time.monotonic()
+        print(f"[PHASE] {sid} verify START", flush=True)
         verify_request = SimpleAgentVerifyRequest.model_validate(
             body.model_dump() | {"response": await get_response_json(response)}
         )
@@ -216,6 +242,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
             cookies=cookies,
         )
         await raise_for_status(verify_response)
+        print(f"[PHASE] {sid} verify DONE ({time.monotonic() - t0:.1f}s)", flush=True)
         return SimpleAgentVerifyResponse.model_validate(await get_response_json(verify_response))
 
 

@@ -14,9 +14,12 @@
 # limitations under the License.
 import asyncio
 import atexit
+import faulthandler
 import json
 import resource
+import signal
 import sys
+import time
 from abc import abstractmethod
 from contextlib import asynccontextmanager
 from io import StringIO
@@ -142,6 +145,10 @@ atexit.register(global_aiohttp_client_exit)
 MAX_NUM_TRIES = 3
 
 
+_SLOW_REQUEST_THRESHOLD = 60  # seconds
+_INTERNAL_RETRY_LOG_INTERVAL = 10  # log every N retries
+
+
 async def request(
     method: str, url: str, _internal: bool = False, **kwargs: Unpack[_RequestOptions]
 ) -> ClientResponse:  # pragma: no cover
@@ -153,9 +160,14 @@ async def request(
 
     client = get_global_aiohttp_client()
     num_tries = 1
+    t0 = time.monotonic()
     while True:
         try:
-            return await client.request(method=method, url=url, **kwargs)
+            result = await client.request(method=method, url=url, **kwargs)
+            elapsed = time.monotonic() - t0
+            if elapsed > _SLOW_REQUEST_THRESHOLD:
+                print(f"[SLOW-REQUEST] {method} {url} took {elapsed:.1f}s", flush=True)
+            return result
         except ServerDisconnectedError:
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -171,9 +183,14 @@ Sleeping 0.5s and retrying...
                 )
                 if num_tries >= MAX_NUM_TRIES:
                     raise e
+            else:
+                if num_tries % _INTERNAL_RETRY_LOG_INTERVAL == 0:
+                    print(
+                        f"[INTERNAL-RETRY] {method} {url} retry #{num_tries} after {type(e).__name__}: {e}",
+                        flush=True,
+                    )
 
-                num_tries += 1
-
+            num_tries += 1
             await asyncio.sleep(0.5)
 
 
@@ -559,6 +576,14 @@ repr(e): {repr(e)}"""
     @classmethod
     def run_webserver(cls) -> FastAPI:  # pragma: no cover
         global_config_dict = get_global_config_dict()
+
+        # Enable faulthandler: SIGUSR1 dumps all thread stacks to stderr
+        faulthandler.enable()
+        try:
+            faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+            print("[FAULTHANDLER] Registered SIGUSR1 handler for thread stack dumps", flush=True)
+        except Exception as e:
+            print(f"[FAULTHANDLER] Could not register SIGUSR1: {e}", flush=True)
 
         initialize_ray()
 

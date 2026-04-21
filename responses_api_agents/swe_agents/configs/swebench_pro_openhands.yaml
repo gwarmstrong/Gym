@@ -1,0 +1,38 @@
+# SWE-bench Pro OpenHands configuration.
+# The dataset processor is dispatched via problem_info["dataset_name"] which this
+# config doesn't override — it is set per-row by benchmarks/swe_bench_pro/prepare.py
+# to "ScaleAI/SWE-bench_Pro", matching the Skills prepare output.
+#
+# container_formatter is intentionally a no-op {instance_id} template. Per-instance
+# docker:// URLs are set per-row in the prepared JSONL (each row has its own
+# `docker://jefzda/sweap-images:<dockerhub_tag>`), bypassing _find_container's
+# .sif file lookup via the docker:// early-return.
+
+swe_agents_pro:
+  responses_api_agents:
+    swe_agents:
+      entrypoint: app.py
+
+      # OpenHands framework configuration (Gym default fork; Skills' swe-bench-pro
+      # uses ludwig-n/OpenHands@ns-swe-bench-multilingual — flagged as known
+      # divergence, see COMPARISON_RESULTS.md).
+      agent_framework: openhands
+      agent_config: responses_api_agents/swe_agents/configs/oh_config.toml
+      agent_max_turns: 100
+      agent_framework_repo: https://github.com/sdevare-nv/nv-OpenHands.git
+      agent_framework_commit: 0d766ad06b2be64a42e6f0175b9ebcc4a06599d9  # pragma: allowlist secret
+
+      # Per-row docker:// URLs in the JSONL take precedence; this value is a
+      # placeholder that the instance row overrides.
+      container_formatter: "docker://jefzda/sweap-images:placeholder"
+      container_folder_path: null
+      swebench_agent_timeout: 1800
+      swebench_tests_timeout: 1800  # Pro test suites can be longer than stock
+      apptainer_memory_limit_mb: 32768
+      command_exec_timeout: 300
+
+      dataset_path: null
+
+      model_server:
+        name: policy_model
+        type: responses_api_models

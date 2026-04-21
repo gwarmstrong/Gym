@@ -1,0 +1,18 @@
+# SWE-bench Pro benchmark config. Chains to the swe_agents agent configured
+# for the Pro eval harness. The per-row dataset_name is "ScaleAI/SWE-bench_Pro"
+# which routes to SweBenchProDatasetProcessor in responses_api_agents/swe_agents/app.py.
+config_paths:
+  - responses_api_agents/swe_agents/configs/swebench_pro_openhands.yaml
+
+swe_bench_pro_benchmark_agent:
+  _inherit_from: swe_agents_pro
+  responses_api_agents:
+    swe_agents:
+      datasets:
+        - name: swe_bench_pro
+          type: benchmark
+          jsonl_fpath: benchmarks/swe_bench_pro/data/swe_bench_pro_benchmark.jsonl
+          prompt_config: null
+          prepare_script: benchmarks/swe_bench_pro/prepare.py
+          # num_repeats is NOT honored for type=benchmark datasets — pass
+          # +num_repeats=N on the CLI instead (see run_swe_bench_pro_gym.py).

@@ -31,7 +31,7 @@ from shutil import rmtree
 from subprocess import Popen
 from subprocess import run as subprocess_run
 from traceback import format_exc
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import ray
 import tomlkit
@@ -57,6 +57,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseCreateParamsNonStreaming,
 )
 from nemo_gym.profiling import Profiler
+from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_metrics
 from responses_api_models.vllm_model.app import VLLMConverter, split_responses_input_output_items
 
 
@@ -151,6 +152,7 @@ class SWEBenchWrapperServerConfig(BaseModel):
     r2e_gym_setup_dir: Path
     swe_rebench_setup_dir: Path
     swebench_multilingual_setup_dir: Path
+    swe_bench_pro_setup_dir: Path
     run_session_id: str
     base_results_dir: Path
 
@@ -429,6 +431,80 @@ SWEBENCH_COMMIT={swebench_commit} \\
         # Execute SWE-bench evaluation command
         search_path = os.path.join(
             self.config.persistent_dir,
+            self.config.agent_run_id,
+            "**",
+            f"{self.config.instance_id}/report.json",
+        )
+
+        return ExecuteContainerCommandArgs(
+            command=swebench_cmd,
+            expected_file_pattern=search_path,
+            mode="eval",
+            timeout=self.config.swebench_tests_timeout + 120,
+        )
+
+
+class SweBenchProDatasetProcessor(BaseDatasetHarnessProcessor):
+    """SWE-bench Pro evaluation harness (https://github.com/wasiahmad/SWE-bench_Pro-os).
+
+    Pro uses a different CLI from the stock SWE-bench harness: it takes
+    --raw_sample_path (the instance JSONL) + --patch_path (the predictions JSONL) +
+    --scripts_dir (run_scripts/ from the Pro repo), instead of
+    --predictions_path + --dataset_name.
+    """
+
+    def setup(self) -> Path:
+        swebench_repo = "https://github.com/wasiahmad/SWE-bench_Pro-os.git"
+        swebench_commit = "HEAD"
+
+        setup_dir = self.parent_dir / "swe_swebench_pro_setup"
+        setup_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._setup_directory_lock(setup_dir, "SWE-bench_Pro"):
+            swebench_pro_dir = setup_dir / "SWE-bench_Pro"
+            uv_dir = setup_dir / "uv"
+            python_dir = setup_dir / "python"
+
+            if swebench_pro_dir.exists():
+                print(f"SWE-bench_Pro already set up at {setup_dir}")
+                return setup_dir
+
+            print(f"Setting up SWE-bench_Pro environment at {setup_dir}...", flush=True)
+            script_fpath = self.parent_dir / "setup_scripts/swebench_pro.sh"
+            command = f"""SETUP_DIR={setup_dir} \\
+UV_DIR={uv_dir} \\
+PYTHON_DIR={python_dir} \\
+SWEBENCH_DIR={swebench_pro_dir} \\
+SWEBENCH_REPO={swebench_repo} \\
+SWEBENCH_COMMIT={swebench_commit} \\
+    {script_fpath}"""
+            self._run_setup_command(command)
+
+            return setup_dir
+
+    def get_run_command(self) -> ExecuteContainerCommandArgs:
+        swebench_cmd = (
+            f'date +"%s.%N" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath} && '
+            f"{self._get_command_sleep_until_predictions_file()} && "
+            "cd /swebench_pro_setup/SWE-bench_Pro && "
+            f'export UV_INSTALL_DIR="{self.config.swe_bench_pro_setup_dir}/uv" && '
+            f'export UV_PYTHON_INSTALL_DIR="{self.config.swe_bench_pro_setup_dir}/python" && '
+            f'export PATH="{self.config.swe_bench_pro_setup_dir}/uv/bin:$PATH" && '
+            "ls -lrt /root/dataset && "
+            f"env -u VIRTUAL_ENV {self.config.swe_bench_pro_setup_dir}/SWE-bench_Pro/venv/bin/python "
+            "    -m swebench.harness.run_local_evaluation "
+            "    --raw_sample_path /root/dataset/data.jsonl "
+            f"    --patch_path {self.config.output_for_eval_mounted_path} "
+            f"    --output_dir eval-outputs/{self.config.agent_run_id} "
+            f"    --scripts_dir {self.config.swe_bench_pro_setup_dir}/SWE-bench_Pro/run_scripts && "
+            f"mkdir -p /trajectories_mount/eval-outputs && "
+            f"cp -r eval-outputs/{self.config.agent_run_id} /trajectories_mount/eval-outputs/ && "
+            f"rm -rf eval-outputs/{self.config.agent_run_id}"
+        )
+
+        search_path = os.path.join(
+            self.config.persistent_dir,
+            "eval-outputs",
             self.config.agent_run_id,
             "**",
             f"{self.config.instance_id}/report.json",
@@ -1374,6 +1450,7 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             openhands_setup_dir=OpenHandsHarnessProcessor(config=self.config).setup(),
             swebench_setup_dir=SweBenchDatasetProcessor(config=self.config).setup(),
             swebench_multilingual_setup_dir=SweBenchMultilingualDatasetProcessor(config=self.config).setup(),
+            swe_bench_pro_setup_dir=SweBenchProDatasetProcessor(config=self.config).setup(),
             r2e_gym_setup_dir=R2EGymDatasetProcessor(config=self.config).setup(),
             swe_rebench_setup_dir=SWERebenchDatasetProcessor(config=self.config).setup(),
         )
@@ -1446,6 +1523,14 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
         if isinstance(container_formatters, str):
             container_formatters = [container_formatters]
+
+        # SWE-bench Pro ships per-instance docker images (jefzda/sweap-images:<tag>) that are
+        # pulled on-demand by apptainer. The prepare script pre-renders the full docker:// URL
+        # per row, so there is no filesystem path to resolve here.
+        for container_formatter in container_formatters:
+            rendered = container_formatter.format(instance_id=instance_id)
+            if rendered.startswith("docker://"):
+                return rendered
 
         if "SWE-rebench" in data_point["dataset_name"]:
             instance_id_modified = instance_id.replace("__", "-")
@@ -1587,6 +1672,14 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
                 f"--mount type=bind,src={params.swebench_multilingual_setup_dir},dst={params.swebench_multilingual_setup_dir}"
             )
 
+        if command.mode == "eval" and "SWE-bench_Pro" in data_point["dataset_name"]:
+            # Mount the entire Pro setup dir at both /swebench_pro_setup (stable in-container path)
+            # and its absolute path (required because uv venv hardcodes absolute paths in shims).
+            mount_args.append(f"--mount type=bind,src={params.swe_bench_pro_setup_dir},dst=/swebench_pro_setup")
+            mount_args.append(
+                f"--mount type=bind,src={params.swe_bench_pro_setup_dir},dst={params.swe_bench_pro_setup_dir}"
+            )
+
         if command.mode == "eval" and data_point["dataset_name"] == "nv-internal-1":
             run_script_path = params.persistent_dir / "run_script.sh"
             parsing_script_path = params.persistent_dir / "parsing_script.py"
@@ -1680,7 +1773,10 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
     def _setup_params(
         self, body: NeMoGymResponseCreateParamsNonStreaming
     ) -> Tuple[SWEBenchWrapperInstanceConfig, BaseDatasetHarnessProcessor]:
-        problem_info = body.metadata | {"container_formatter": self.config.container_formatter}
+        # Default container_formatter from the agent config, but allow per-row overrides
+        # via body.metadata (needed for SWE-bench Pro where each instance has its own
+        # `docker://jefzda/sweap-images:<tag>` URL baked into prepare.py output).
+        problem_info = {"container_formatter": self.config.container_formatter, **body.metadata}
         instance_id = problem_info.get("instance_id", "unknown")
 
         # Create persistent directory for I/O and logs in local workspace
@@ -1783,6 +1879,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             dataset_processor = R2EGymDatasetProcessor(config=params)
         elif "SWE-bench_Multilingual" in params.problem_info["dataset_name"]:
             dataset_processor = SweBenchMultilingualDatasetProcessor(config=params)
+        elif "SWE-bench_Pro" in params.problem_info["dataset_name"]:
+            dataset_processor = SweBenchProDatasetProcessor(config=params)
         else:
             dataset_processor = SweBenchDatasetProcessor(config=params)
 
@@ -1884,6 +1982,45 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
                     metadata["instance_config"]
                 ).model_dump(),
             )
+
+    @staticmethod
+    def _score_fn(result: Dict[str, Any]) -> Dict[str, float]:
+        """Map verify responses to named scores for compute_pass_majority_metrics.
+
+        Mirrors Skills' SweBenchMetrics._get_score_dict:
+            issues_resolved  = 1 iff report.json "resolved" is True
+            no_patch         = 1 iff patch_exists is False
+            patch_cant_apply = 1 iff patch_exists is True but resolved is False
+                               (approximates Skills' patch_successfully_applied==False)
+        Skills tracks patch_successfully_applied directly; Gym's SWEBenchMetrics
+        doesn't surface that field, so we synthesize it from (patch_exists, resolved).
+        """
+        resolved = bool(result.get("resolved", False))
+        patch_exists = bool(result.get("patch_exists", False))
+        return {
+            "issues_resolved": 1.0 if resolved else 0.0,
+            "no_patch": 1.0 if not patch_exists else 0.0,
+            "patch_cant_apply": 1.0 if (patch_exists and not resolved) else 0.0,
+        }
+
+    def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Compute pass@k / majority@k / no_patch / patch_cant_apply across rollouts.
+
+        Uses compute_pass_majority_metrics with a score_fn that emits the three
+        named scores Skills' swe-bench metrics class produces. Every score key
+        gets pass@1[avg-of-k], pass@k, and majority@k automatically.
+        """
+        metrics, _, _, _ = compute_pass_majority_metrics(
+            tasks,
+            score_fn=self._score_fn,
+        )
+        return metrics
+
+    def get_key_metrics(self, agent_metrics: Dict[str, Any]) -> Dict[str, Any]:
+        key: Dict[str, Any] = {}
+        key.update(highest_k_metrics(agent_metrics, "pass@1[avg-of-{k}]"))
+        key.update(highest_k_metrics(agent_metrics, "pass@{k}"))
+        return key
 
 
 if __name__ == "__main__":

@@ -1055,6 +1055,23 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
         # the agent works in /{repo_name} or /app, so skip the safety check.
         if "SWE-rebench" in data_point["dataset_name"] or data_point["dataset_name"] == "nv-internal-1":
             workspace_check_cmd = ""
+        elif "SWE-bench_Pro" in data_point["dataset_name"]:
+            # SWE-bench Pro images stage the repo at /app, but OpenHands'
+            # run_infer.sh (SWE-bench flavour) hardcodes cd /workspace/<repo>__<version>
+            # where repo comes from instance.repo and version defaults to "1.0" when
+            # absent. Pro has no version field, so the path is always
+            # /workspace/<org>__<repo>__1.0. Instead of copying /app (slow, GB-scale),
+            # symlink /workspace to a sibling of /app so the expected dir resolves.
+            instance_dict = json.loads(data_point["instance_dict"])
+            repo = instance_dict.get("repo", "").replace("/", "__")
+            version = instance_dict.get("version") or "1.0"
+            oh_workspace_repo_dir = f"{repo}__{version}"
+            workspace_check_cmd = (
+                f"mkdir -p /workspace && "
+                f"if [ ! -e /workspace/{oh_workspace_repo_dir} ]; then "
+                f"  ln -sf /app /workspace/{oh_workspace_repo_dir}; "
+                f"fi && "
+            )
         else:
             workspace_check_cmd = (
                 "if [ -d /workspace ]; then "

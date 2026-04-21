@@ -25,6 +25,7 @@ nemo-skills container, so the split is unnecessary.
 """
 
 import json
+import os
 from pathlib import Path
 
 import datasets
@@ -45,7 +46,14 @@ LANGUAGE_MAP = {
 
 DATASET_NAME = "ScaleAI/SWE-bench_Pro"
 SPLIT = "test"
-CONTAINER_FORMATTER_TEMPLATE = "docker://jefzda/sweap-images:{dockerhub_tag}"
+# Pre-dumped .sif mirror mounted at /swe-bench-images on dfw. Avoids flaky
+# dockerhub pulls for each of 643+ images. Naming matches Skills'
+# dump_images.py convention: jefzda_sweap-images_<dockerhub_tag>.sif.
+# Fall back via env var for other clusters or ad-hoc docker:// usage.
+CONTAINER_FORMATTER_TEMPLATE = os.environ.get(
+    "SWE_BENCH_PRO_CONTAINER_FORMATTER",
+    "/swe-bench-images/jefzda_sweap-images_{dockerhub_tag}.sif",
+)
 
 
 def _build_problem_statement(row: dict) -> str:

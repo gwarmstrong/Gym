@@ -51,7 +51,7 @@ from nemo_gym.base_responses_api_agent import (
     SimpleResponsesAPIAgent,
 )
 from nemo_gym.config_types import ModelServerRef
-from nemo_gym.global_config import OmegaConf, get_global_config_dict
+from nemo_gym.global_config import OmegaConf, get_first_server_config_dict, get_global_config_dict
 from nemo_gym.openai_utils import (
     NeMoGymResponse,
     NeMoGymResponseCreateParamsNonStreaming,
@@ -993,9 +993,20 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
         with open(agent_config, "r") as f:
             config = tomlkit.parse(f.read())
 
+        # Resolve the policy model URL from the global config. With base_url=""
+        # OpenHands' litellm call fails with ClientResponseError before the
+        # model is ever contacted. Look up the named model_server (typically
+        # "policy_model") and build http://<host>:<port>/v1 so OpenHands can
+        # reach the Gym wrapper. Requires use_absolute_ip=true at ng_run time
+        # for the nested apptainer to actually reach the host from the network
+        # namespace it inherits.
+        ng_config = get_global_config_dict()
+        model_server_cfg = get_first_server_config_dict(ng_config, self.config.model_server_name)
+        policy_base_url = f"http://{model_server_cfg.host}:{model_server_cfg.port}/v1"
+
         config["llm"]["model"] |= {
             "model": self.config.body.model,
-            "base_url": "",  # May need to populate this
+            "base_url": policy_base_url,
             "temperature": self.config.inference_params["temperature"],
             "top_p": self.config.inference_params["top_p"],
         }

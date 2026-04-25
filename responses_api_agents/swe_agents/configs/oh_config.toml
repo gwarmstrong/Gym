@@ -4,10 +4,9 @@
 # Specifying them here will have no effect! Use Nemo-Skills options instead.
 api_key = "EMPTY"  # pragma: allowlist secret
 custom_llm_provider = "openai"
-# native_tool_calling=true requires vLLM to be started with
-# --enable-auto-tool-choice and --tool-call-parser=<model-specific parser>.
-# NVIDIA-Nemotron-3-Nano ships only a reasoning parser, not a tool parser,
-# so we disable native tool calling and let OpenHands parse tool calls
-# from model text output instead. Re-enable once vLLM-side parser support
-# is wired through.
-native_tool_calling = false
+# native_tool_calling=true requires vLLM started with --enable-auto-tool-choice
+# and a matching --tool-call-parser. Both are wired up in run_*_gym.py and
+# run_*_ns_baseline.py for SWE-bench Pro (qwen3_coder parser for Nemotron).
+# With native_tool_calling=false the model emits bare <function=name> text
+# and vLLM's tool parser can't find the <tool_call> wrapper → tool_calls: [].
+native_tool_calling = true

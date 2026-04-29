@@ -147,12 +147,14 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         responses_create_params: Dict[str, Any],
         cookies,
     ) -> Optional[Dict[str, Any]]:
-        # See bfcl_v4_ast_agent for why we omit tool_choice — BFCL parity
-        # requires raw-text vLLM output (no --tool-call-parser flag), but
-        # vLLM rejects tool_choice="auto" unless that flag is set.
+        # See bfcl_v4_ast_agent for why we use tool_choice="none" —
+        # BFCL parity requires raw-text vLLM output, and vLLM defaults
+        # to tool_choice="auto" when tools is set, which 400s without
+        # --enable-auto-tool-choice + --tool-call-parser flags.
         chat_body: Dict[str, Any] = {"messages": messages}
         if tools:
             chat_body["tools"] = tools
+            chat_body["tool_choice"] = "none"
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),

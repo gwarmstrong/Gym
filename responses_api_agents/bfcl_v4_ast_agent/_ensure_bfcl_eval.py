@@ -28,45 +28,9 @@ BFCL_GIT_COMMIT = "86d0374d0db52623c5092a73f82c22b87b7e9a25"
 BFCL_EVAL_SUBDIR = "berkeley-function-call-leaderboard"
 BFCL_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
-# Mirror Skills' BFCL_REQUIREMENTS in nemo_skills/inference/eval/bfcl.py.
-# bfcl_eval/constants/model_config.py eagerly imports every handler at
-# module load, so we need the SDKs / runtime deps even though we only
-# use the local-inference Qwen handler at parse time. cryptography +
-# cffi added on top because the Gym container lacks them and Gemini's
-# import chain ends at google.auth -> cryptography.
-SKILLS_BFCL_REQUIREMENTS = [
-    "requests",
-    "tqdm",
-    "numpy==1.26.4",
-    "pandas",
-    "huggingface_hub",
-    "pydantic>=2.8.2",
-    "python-dotenv>=1.0.1",
-    "tree_sitter==0.21.3",
-    "tree-sitter-java==0.21.0",
-    "tree-sitter-javascript==0.21.4",
-    "openai>=1.86.0",
-    "mistralai==1.7.0",
-    "anthropic>=0.75.0",
-    "cohere==5.18.0",
-    "typer>=0.12.5",
-    "tabulate>=0.9.0",
-    "datamodel-code-generator==0.25.7",
-    "google-genai>=1.52.0",
-    "mpmath==1.3.0",
-    "tenacity>=8.5.0",
-    "writer-sdk>=2.1.0",
-    "overrides",
-    "boto3",
-    "beautifulsoup4",
-    "html2text",
-    "rank_bm25==0.2.2",
-    "google-search-results",
-    "faiss-cpu==1.11.0",
-    "networkx==3.3",
-    "filelock==3.20.0",
-]
 # Gym-container extras that Skills' container has by default but we don't.
+# bfcl_eval pyproject already pins the rest of its deps; we only top up
+# what the Gym container lacks transitively.
 EXTRA_RUNTIME_DEPS = [
     "cffi>=1.17",
     "cryptography>=43",
@@ -99,35 +63,42 @@ def ensure_bfcl_eval_installed() -> None:
         repo_dir = Path(tmp) / "gorilla"
         subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
         subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
-        cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "--python",
-            sys.executable,
-            str(repo_dir / BFCL_EVAL_SUBDIR),
-            *SKILLS_BFCL_REQUIREMENTS,
-            *EXTRA_RUNTIME_DEPS,
-            "--extra-index-url",
-            BFCL_EXTRA_INDEX_URL,
-        ]
-        try:
-            subprocess.run(cmd, check=True)
-        except FileNotFoundError:
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-cache-dir",
-                    str(repo_dir / BFCL_EVAL_SUBDIR),
-                    *SKILLS_BFCL_REQUIREMENTS,
-                    *EXTRA_RUNTIME_DEPS,
-                    "--extra-index-url",
-                    BFCL_EXTRA_INDEX_URL,
-                ],
-                check=True,
-            )
+        # Two-stage install:
+        #   1. bfcl_eval alone — let it pull its own pinned deps
+        #      (google-genai==1.24.0, qwen-agent, anthropic, etc.). uv's
+        #      strict resolver rejects mixing those with our looser pins
+        #      from SKILLS_BFCL_REQUIREMENTS.
+        #   2. Top up Gym-container extras (cffi/cryptography/soundfile)
+        #      separately. These don't conflict with bfcl_eval's pins.
+        for stage_args in (
+            [str(repo_dir / BFCL_EVAL_SUBDIR)],
+            list(EXTRA_RUNTIME_DEPS),
+        ):
+            uv_cmd = [
+                "uv",
+                "pip",
+                "install",
+                "--no-cache-dir",
+                "--python",
+                sys.executable,
+                *stage_args,
+                "--extra-index-url",
+                BFCL_EXTRA_INDEX_URL,
+            ]
+            try:
+                subprocess.run(uv_cmd, check=True)
+            except FileNotFoundError:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-cache-dir",
+                        *stage_args,
+                        "--extra-index-url",
+                        BFCL_EXTRA_INDEX_URL,
+                    ],
+                    check=True,
+                )
     LOG.info("bfcl_eval install complete")

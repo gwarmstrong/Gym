@@ -1,0 +1,9 @@
+bfcl_v4_ast:
+  resources_servers:
+    bfcl_v4_ast:
+      entrypoint: app.py
+      domain: agent
+      verified: false
+      description: BFCL v4 AST family — single-turn function-calling tasks (Python/Java/JS, simple/parallel/multiple, irrelevance, live_*) graded with bfcl_eval's AST checker.
+      value: Improve tool-calling and function-spec adherence for single-turn requests.
+      model_handler: Qwen/Qwen3-8B-FC

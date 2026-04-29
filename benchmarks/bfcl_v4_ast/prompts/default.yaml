@@ -1,0 +1,8 @@
+# BFCL bakes the user prompt + tool schemas into the chat template at agent
+# time (HF tokenizer.apply_chat_template(messages, tools=...)) — same as
+# Skills' BFCLGenerationTask. The benchmark JSONL carries `question`
+# messages and `tools` in verifier_metadata; the agent assembles them.
+# This file is a placeholder so the benchmark config can reference a
+# prompt_config path for compatibility.
+system: ""
+user: ""

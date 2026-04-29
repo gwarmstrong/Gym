@@ -28,11 +28,19 @@ BFCL_GIT_COMMIT = "86d0374d0db52623c5092a73f82c22b87b7e9a25"
 BFCL_EVAL_SUBDIR = "berkeley-function-call-leaderboard"
 BFCL_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
-# Gym-container extras. The agents avoid bfcl_eval.constants.model_config
-# entirely (importing handler modules directly) so we no longer need the
-# whole-tree registry's transitive deps. This minimal list covers what's
-# still required:
-EXTRA_RUNTIME_DEPS: list[str] = []
+# Gym-container extras. Agent parser-build avoids the registry entirely
+# by importing QwenFCHandler directly, BUT the resource server's
+# compute_metrics() shells out to `python -m bfcl_eval evaluate`, which
+# is the CLI entrypoint that DOES import the full registry. So the
+# resource-server-side install still needs the registry's transitive
+# deps. Keep the list minimal — only deps that have actually surfaced
+# during cluster probes.
+EXTRA_RUNTIME_DEPS = [
+    "cffi>=1.17",
+    "cryptography>=43",
+    "soundfile",  # qwen_agent.llm.base
+    "Pillow",  # qwen_agent.tools.image_zoom_in_qwen3vl
+]
 
 
 def ensure_bfcl_eval_installed() -> None:

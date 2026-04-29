@@ -174,7 +174,9 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
                 for r, bfcl_row in zip(rollouts, bfcl_rows):
                     r["is_correct"] = bfcl_row["id"] not in wrong_ids
 
-        metrics, _ = compute_pass_majority_metrics(tasks, score_fn=self._score_fn, answer_key=None)
+        metrics, _all_scores, _score_names, _max_k = compute_pass_majority_metrics(
+            tasks, score_fn=self._score_fn, answer_key=None
+        )
         subset = compute_subset_metrics(tasks, field="test_category", score_fn=self._score_fn, answer_key=None)
         metrics.update(subset)
         return metrics

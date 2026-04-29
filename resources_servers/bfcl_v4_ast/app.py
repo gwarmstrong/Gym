@@ -214,7 +214,7 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
                     r["is_correct"] = bfcl_row["id"] not in wrong_ids
 
         # Now compute pass@k / pass@1[avg-of-k] / majority@k from is_correct.
-        metrics, _ = compute_pass_majority_metrics(
+        metrics, _all_scores, _score_names, _max_k = compute_pass_majority_metrics(
             tasks,
             score_fn=self._score_fn,
             answer_key=None,  # AST has no single "answer string" to majority-vote on

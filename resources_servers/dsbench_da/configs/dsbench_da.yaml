@@ -1,0 +1,30 @@
+dsbench_da:
+  resources_servers:
+    dsbench_da:
+      entrypoint: app.py
+      domain: agent
+      verified: false
+      description: DSBench data-analysis verifier (Skills-parity relaxed_equal + boxed/regex extraction)
+      value: Improve agentic data-analysis capability over Excel/CSV files (DSBench)
+
+# Verifier-only smoke agent — no tool execution. Useful for example-validation
+# (`ng_prepare_data ... +mode=example_validation`) and unit-style end-to-end
+# checks against a remote OpenAI-compatible endpoint without spinning up a
+# python sandbox. The dsbench_da BENCHMARK config (benchmarks/dsbench_da/config.yaml)
+# defines a separate agent that routes through ns_tools for tool execution.
+dsbench_da_simple_agent:
+  responses_api_agents:
+    simple_agent:
+      entrypoint: app.py
+      max_steps: 50
+      resources_server:
+        type: resources_servers
+        name: dsbench_da
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      datasets:
+        - name: example
+          type: example
+          license: Apache 2.0
+          jsonl_fpath: resources_servers/dsbench_da/data/example.jsonl

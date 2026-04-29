@@ -34,13 +34,17 @@ BFCL_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 # inference handlers but pay for all of them. cryptography is a
 # transitive of google.auth required by the Gemini handler — bfcl_eval
 # doesn't pull it via setup.py, so importing the module fails without it.
-EXTRA_RUNTIME_DEPS = ["cryptography>=43"]
+EXTRA_RUNTIME_DEPS = ["cffi>=1.17", "cryptography>=43"]
 
 
 def ensure_bfcl_eval_installed() -> None:
     try:
+        import _cffi_backend  # noqa: F401  # cryptography native backend
         import bfcl_eval  # noqa: F401
-        import cryptography  # noqa: F401
+
+        # Smoke-import the failing path explicitly so we catch C-ext ABI
+        # mismatches up front instead of on the first /run.
+        from cryptography.hazmat.bindings._rust import exceptions  # noqa: F401
 
         return
     except (ModuleNotFoundError, ImportError):

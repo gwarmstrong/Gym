@@ -120,6 +120,7 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
             self.config.model_handler,
             "--test-category",
             category,
+            "--partial-eval",  # Gym scores only rollouts collected this run
         ]
         LOG.info("Running BFCL eval: %s (cwd=%s)", " ".join(cmd), work_dir)
         subprocess.run(

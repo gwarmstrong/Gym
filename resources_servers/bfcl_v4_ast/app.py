@@ -157,6 +157,10 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
             self.config.model_handler,
             "--test-category",
             category,
+            # Gym's compute_metrics gets only the rollouts collected for
+            # this run (subset of the upstream test split), so pass
+            # --partial-eval to skip bfcl_eval's full-set length check.
+            "--partial-eval",
         ]
         LOG.info("Running BFCL eval: %s (cwd=%s)", " ".join(cmd), work_dir)
         subprocess.run(

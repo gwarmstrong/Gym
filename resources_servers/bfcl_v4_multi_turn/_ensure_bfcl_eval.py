@@ -44,12 +44,17 @@ EXTRA_RUNTIME_DEPS = [
 
 
 def ensure_bfcl_eval_installed() -> None:
+    # Probe ALL imports the runtime needs:
+    #   - bfcl_eval itself
+    #   - QwenFCHandler (used directly by agents, bypasses the registry)
+    #   - bfcl_eval.constants.model_config (the CLI subprocess uses this)
+    #     — touches qwen_agent which transitively imports PIL/soundfile,
+    #     so the import_module success implies all those deps are present.
     try:
         import bfcl_eval  # noqa: F401
-
-        # Probe the only handler the BFCL agents actually use. Avoid the
-        # bfcl_eval.constants.model_config registry — see
-        # _build_response_parser comment in the agents for why.
+        from bfcl_eval.constants.model_config import (  # noqa: F401
+            local_inference_model_map,
+        )
         from bfcl_eval.model_handler.local_inference.qwen_fc import (  # noqa: F401
             QwenFCHandler,
         )

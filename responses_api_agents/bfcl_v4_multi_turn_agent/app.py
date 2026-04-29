@@ -108,9 +108,15 @@ class _SyntheticChoice:
         self.text = text
 
 
+class _SyntheticUsage:
+    prompt_tokens = 0
+    completion_tokens = 0
+
+
 class _SyntheticResponse:
     def __init__(self, text: str) -> None:
         self.choices = [_SyntheticChoice(text)]
+        self.usage = _SyntheticUsage()
 
 
 def _build_response_parser(model_handler_key: str):

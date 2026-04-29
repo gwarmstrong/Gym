@@ -91,11 +91,21 @@ class _SyntheticChoice:
         self.text = text
 
 
+class _SyntheticUsage:
+    """Stand-in for OpenAI usage block. QwenFC handler reads
+    `prompt_tokens` and `completion_tokens` for return-dict bookkeeping
+    only — token counts aren't used downstream by Skills' parser."""
+
+    prompt_tokens = 0
+    completion_tokens = 0
+
+
 class _SyntheticResponse:
     """Stand-in for an OpenAI text-completion Response object."""
 
     def __init__(self, text: str) -> None:
         self.choices = [_SyntheticChoice(text)]
+        self.usage = _SyntheticUsage()
 
 
 def _build_response_parser(model_handler_key: str):

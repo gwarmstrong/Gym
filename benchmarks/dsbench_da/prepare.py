@@ -48,6 +48,28 @@ OUTPUT_FPATH = DATA_DIR / "dsbench_da_benchmark.jsonl"
 # python sandbox at rollout time.
 DISPLAY_ROOT = Path("/opt/Gym/benchmarks/dsbench_da/data/extracted")
 
+# OpenAI Responses tool definition for stateful_python_code_exec — matches the
+# DirectPythonTool exposed by the ns_tools resources server. Baked into each
+# row's responses_create_params.tools so the model receives a tool list when
+# the agent forwards the request to vLLM. apply_prompt_to_row preserves
+# `tools` while filling `input` from the prompt template.
+STATEFUL_PYTHON_TOOL_DEF = {
+    "type": "function",
+    "name": "stateful_python_code_exec",
+    "description": (
+        "Call this function to execute Python code in a stateful Jupyter notebook environment. "
+        "Python will respond with the output of the execution or time out after 120.0 seconds."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "code": {"description": "Code to execute", "type": "string"},
+        },
+        "required": ["code"],
+    },
+    "strict": True,
+}
+
 
 def _format_excel_paths(excel_files: Iterable[Path], actual_root: Path, display_root: Path) -> str:
     """Map on-disk paths to in-container absolute paths for the prompt."""
@@ -159,6 +181,11 @@ def prepare() -> Path:
                 "task_name": task["name"],
                 "task_url": task["url"],
                 "task_year": task["year"],
+                # Tools list — apply_prompt_to_row preserves these while
+                # filling responses_create_params.input from prompts/default.yaml.
+                "responses_create_params": {
+                    "tools": [STATEFUL_PYTHON_TOOL_DEF],
+                },
             }
             rows.append(row)
 

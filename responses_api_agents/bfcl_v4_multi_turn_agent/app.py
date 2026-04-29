@@ -31,10 +31,12 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import Request
+from fastapi import Body, Request
 from pydantic import ConfigDict, Field
 
 from nemo_gym.base_resources_server import (
+    AggregateMetrics,
+    AggregateMetricsRequest,
     BaseRunRequest,
     BaseVerifyRequest,
     BaseVerifyResponse,
@@ -407,9 +409,7 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         await raise_for_status(verify_response)
         return BfclV4MultiTurnAgentVerifyResponse.model_validate(await get_response_json(verify_response))
 
-    async def aggregate_metrics(self, body):
-        from nemo_gym.base_resources_server import AggregateMetrics
-
+    async def aggregate_metrics(self, body: AggregateMetricsRequest = Body()) -> AggregateMetrics:
         response = await self.server_client.post(
             server_name=self.config.resources_server.name,
             url_path="/aggregate_metrics",

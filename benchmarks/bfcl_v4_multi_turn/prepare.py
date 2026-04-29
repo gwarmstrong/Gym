@@ -44,19 +44,33 @@ def _ensure_bfcl_eval_installed() -> None:
             repo_dir = Path(tmp) / "gorilla"
             subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
             subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-cache-dir",
-                    str(repo_dir / BFCL_EVAL_SUBDIR),
-                    "--extra-index-url",
-                    BFCL_EXTRA_INDEX_URL,
-                ],
-                check=True,
-            )
+            cmd = [
+                "uv",
+                "pip",
+                "install",
+                "--no-cache-dir",
+                "--python",
+                sys.executable,
+                str(repo_dir / BFCL_EVAL_SUBDIR),
+                "--extra-index-url",
+                BFCL_EXTRA_INDEX_URL,
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+            except FileNotFoundError:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-cache-dir",
+                        str(repo_dir / BFCL_EVAL_SUBDIR),
+                        "--extra-index-url",
+                        BFCL_EXTRA_INDEX_URL,
+                    ],
+                    check=True,
+                )
 
 
 def _load_category(target_folder: Path, category: str) -> list[dict]:

@@ -144,10 +144,16 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
         """Invoke vllm_model.chat_completions and return the raw dict."""
         # Pass through sampling params from responses_create_params; map
         # max_output_tokens -> max_completion_tokens (chat-completions).
+        # Send messages + tools but NO tool_choice. vLLM rejects
+        # tool_choice="auto" unless --enable-auto-tool-choice +
+        # --tool-call-parser are set, but BFCL parity requires NOT setting
+        # --tool-call-parser (raw text output that BFCL's FC handler
+        # parses). Omitting tool_choice entirely lets vLLM apply the chat
+        # template with tools (as Skills does via
+        # apply_chat_template(messages, tools=...)) and emit raw text.
         chat_body: Dict[str, Any] = {"messages": messages}
         if tools:
             chat_body["tools"] = tools
-            chat_body["tool_choice"] = "auto"
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),

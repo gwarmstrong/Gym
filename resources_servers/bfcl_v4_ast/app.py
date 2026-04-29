@@ -74,6 +74,17 @@ class BfclV4AstVerifyResponse(BaseVerifyResponse):
 class BfclV4AstResourcesServer(SimpleResourcesServer):
     config: BfclV4AstResourcesServerConfig
 
+    def model_post_init(self, __context) -> None:
+        # Re-install bfcl_eval after the rollout client's `uv sync`
+        # stripped it on startup. compute_metrics() shells out to the
+        # bfcl_eval CLI, and the agent's parser also imports the package.
+        from resources_servers.bfcl_v4_ast._ensure_bfcl_eval import (
+            ensure_bfcl_eval_installed,
+        )
+
+        ensure_bfcl_eval_installed()
+        super().model_post_init(__context)
+
     async def verify(self, body: BfclV4AstVerifyRequest) -> BfclV4AstVerifyResponse:
         # Per-rollout reward is a placeholder — actual grading is batched
         # in compute_metrics(). We still return everything needed for that

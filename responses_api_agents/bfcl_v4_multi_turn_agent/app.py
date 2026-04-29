@@ -125,6 +125,16 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
     config: BfclV4MultiTurnAgentConfig
     _response_parser = None
 
+    def model_post_init(self, __context) -> None:
+        # Re-install bfcl_eval after the rollout client's `uv sync`
+        # stripped it on startup. See bfcl_v4_ast_agent for details.
+        from responses_api_agents.bfcl_v4_multi_turn_agent._ensure_bfcl_eval import (
+            ensure_bfcl_eval_installed,
+        )
+
+        ensure_bfcl_eval_installed()
+        super().model_post_init(__context)
+
     def _get_parser(self):
         if self._response_parser is None:
             self._response_parser = _build_response_parser(self.config.model_handler)

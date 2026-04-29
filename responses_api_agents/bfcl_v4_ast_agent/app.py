@@ -113,6 +113,17 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
     config: BfclV4AstAgentConfig
     _response_parser = None  # set on first request
 
+    def model_post_init(self, __context) -> None:
+        # The rollout client runs `uv sync` on startup, which strips
+        # bfcl_eval (intentionally not pinned in pyproject.toml). Restore
+        # it now, after the sync, before any rollout request lands.
+        from responses_api_agents.bfcl_v4_ast_agent._ensure_bfcl_eval import (
+            ensure_bfcl_eval_installed,
+        )
+
+        ensure_bfcl_eval_installed()
+        super().model_post_init(__context)
+
     def _get_parser(self):
         if self._response_parser is None:
             self._response_parser = _build_response_parser(self.config.model_handler)

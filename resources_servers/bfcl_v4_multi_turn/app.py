@@ -68,6 +68,16 @@ class BfclV4MultiTurnVerifyResponse(BaseVerifyResponse):
 class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
     config: BfclV4MultiTurnResourcesServerConfig
 
+    def model_post_init(self, __context) -> None:
+        # Re-install bfcl_eval after `uv sync` strips it. Same pattern as
+        # bfcl_v4_ast resource server.
+        from resources_servers.bfcl_v4_multi_turn._ensure_bfcl_eval import (
+            ensure_bfcl_eval_installed,
+        )
+
+        ensure_bfcl_eval_installed()
+        super().model_post_init(__context)
+
     async def verify(self, body: BfclV4MultiTurnVerifyRequest) -> BfclV4MultiTurnVerifyResponse:
         return BfclV4MultiTurnVerifyResponse(**body.model_dump(), reward=0.0)
 

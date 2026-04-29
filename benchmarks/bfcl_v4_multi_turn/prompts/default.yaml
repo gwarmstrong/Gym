@@ -1,0 +1,4 @@
+# Multi-turn agent assembles per-turn prompts client-side from
+# verifier_metadata.question; this is a placeholder for compatibility.
+system: ""
+user: ""

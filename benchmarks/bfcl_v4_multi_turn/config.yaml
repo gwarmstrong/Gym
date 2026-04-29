@@ -1,0 +1,15 @@
+config_paths:
+  - resources_servers/bfcl_v4_multi_turn/configs/bfcl_v4_multi_turn.yaml
+  - responses_api_agents/bfcl_v4_multi_turn_agent/configs/bfcl_v4_multi_turn_agent.yaml
+
+bfcl_v4_multi_turn_benchmark_agent:
+  _inherit_from: bfcl_v4_multi_turn_agent
+  responses_api_agents:
+    bfcl_v4_multi_turn_agent:
+      datasets:
+      - name: bfcl_v4_multi_turn
+        type: benchmark
+        jsonl_fpath: benchmarks/bfcl_v4_multi_turn/data/bfcl_v4_multi_turn_benchmark.jsonl
+        prompt_config: null
+        prepare_script: benchmarks/bfcl_v4_multi_turn/prepare.py
+        license: Apache 2.0

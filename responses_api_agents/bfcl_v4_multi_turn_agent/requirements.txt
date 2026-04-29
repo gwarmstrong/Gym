@@ -1,0 +1,4 @@
+-e nemo-gym[dev] @ ../../
+# Skills' dataset/bfcl_v3/utils.py is imported by app.py for the
+# multi_turn_miss_func tools-rebuild path. Available via mounted
+# nemo-skills source.

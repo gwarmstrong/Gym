@@ -153,22 +153,26 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
         return {"accuracy": float(bool(rollout.get("is_correct")))}
 
     def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
-        by_category: Dict[str, List[Dict[str, Any]]] = {}
+        # Group by (test_category, rollout_index) — see bfcl_v4_ast for rationale.
+        by_cat_idx: Dict[tuple[str, int], List[Dict[str, Any]]] = {}
         for task_rollouts in tasks:
             for rollout in task_rollouts:
                 cat = rollout.get("test_category")
                 if not cat:
                     continue
-                by_category.setdefault(cat, []).append(rollout)
+                idx = int(rollout.get("_ng_rollout_index", 0))
+                by_cat_idx.setdefault((cat, idx), []).append(rollout)
 
         with tempfile.TemporaryDirectory() as tmp:
             work_dir = Path(tmp)
-            for category, rollouts in by_category.items():
+            for (category, idx), rollouts in by_cat_idx.items():
                 bfcl_rows = [self._to_bfcl_result_row(r) for r in rollouts]
+                stage_dir = work_dir / f"{category}_idx{idx}"
+                stage_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    wrong_ids = self._run_bfcl_eval_for_category(category, bfcl_rows, work_dir)
+                    wrong_ids = self._run_bfcl_eval_for_category(category, bfcl_rows, stage_dir)
                 except subprocess.CalledProcessError as exc:
-                    LOG.error("bfcl_eval failed for %s: %s", category, exc)
+                    LOG.error("bfcl_eval failed for %s idx=%d: %s", category, idx, exc)
                     for r in rollouts:
                         r["is_correct"] = False
                     continue

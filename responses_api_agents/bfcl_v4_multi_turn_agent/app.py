@@ -192,6 +192,12 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             out.append({name: args_str})
         return out
 
+    async def responses(self, body=None):
+        # BFCL flow drives vLLM /v1/chat/completions directly from run();
+        # the agent's own /v1/responses is unused. Stub satisfies the
+        # SimpleResponsesAPIAgent abstract interface.
+        raise NotImplementedError("bfcl_v4_multi_turn_agent does not expose /v1/responses; use /run.")
+
     async def run(
         self,
         request: Request,

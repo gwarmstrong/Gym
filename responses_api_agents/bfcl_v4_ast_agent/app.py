@@ -166,6 +166,12 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
         await raise_for_status(response)
         return await get_response_json(response)
 
+    async def responses(self, body=None):
+        # BFCL flow goes straight from run() to vLLM /v1/chat/completions
+        # — the agent's own /v1/responses endpoint is unused. Stub kept
+        # only to satisfy SimpleResponsesAPIAgent's abstract interface.
+        raise NotImplementedError("bfcl_v4_ast_agent does not expose /v1/responses; use /run instead.")
+
     async def run(
         self,
         request: Request,

@@ -20,8 +20,13 @@ This is the AST single-turn flavor — runs the loop exactly once.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
+
+
+LOG = logging.getLogger(__name__)
 
 from fastapi import Request
 from pydantic import ConfigDict, Field
@@ -139,13 +144,10 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
         """Invoke vllm_model.chat_completions and return the raw dict."""
         # Pass through sampling params from responses_create_params; map
         # max_output_tokens -> max_completion_tokens (chat-completions).
-        chat_body: Dict[str, Any] = {
-            "messages": messages,
-            "tools": tools or None,
-            # Disable vLLM's tool_choice — let the model decide whether
-            # to call a tool or abstain (matches Skills' BFCL flow).
-            "tool_choice": "auto" if tools else None,
-        }
+        chat_body: Dict[str, Any] = {"messages": messages}
+        if tools:
+            chat_body["tools"] = tools
+            chat_body["tool_choice"] = "auto"
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),
@@ -163,6 +165,14 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
             json=chat_body,
             cookies=cookies,
         )
+        if response.status >= 400:
+            err_body = (await response.content.read()).decode("utf-8", "replace")
+            LOG.error(
+                "vllm_model /v1/chat/completions returned %d. body sent (truncated 1KB): %s. response: %s",
+                response.status,
+                json.dumps(chat_body, default=str)[:1024],
+                err_body[:2048],
+            )
         await raise_for_status(response)
         return await get_response_json(response)
 
@@ -173,6 +183,17 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
         raise NotImplementedError("bfcl_v4_ast_agent does not expose /v1/responses; use /run instead.")
 
     async def run(
+        self,
+        request: Request,
+        body: BfclV4AstAgentRunRequest,
+    ) -> BfclV4AstAgentVerifyResponse:
+        try:
+            return await self._run_inner(request, body)
+        except Exception:
+            LOG.exception("bfcl_v4_ast_agent.run() failed")
+            raise
+
+    async def _run_inner(
         self,
         request: Request,
         body: BfclV4AstAgentRunRequest,

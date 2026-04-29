@@ -61,6 +61,8 @@ class BfclV4MultiTurnVerifyRequest(BaseVerifyRequest):
 
 
 class BfclV4MultiTurnVerifyResponse(BaseVerifyResponse):
+    # Override BaseVerifyResponse.response (NeMoGymResponse) — see request above.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     generation: List[List[Any]] = Field(default_factory=list)

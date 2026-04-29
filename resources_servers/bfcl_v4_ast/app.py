@@ -65,6 +65,9 @@ class BfclV4AstVerifyRequest(BaseVerifyRequest):
 
 
 class BfclV4AstVerifyResponse(BaseVerifyResponse):
+    # Override BaseVerifyResponse.response (NeMoGymResponse) — see
+    # BfclV4AstVerifyRequest above for rationale.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     predicted_tool_calls: List[Dict[str, Any]] = Field(default_factory=list)

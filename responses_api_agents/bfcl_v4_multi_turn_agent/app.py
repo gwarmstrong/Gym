@@ -97,13 +97,37 @@ def _is_long_context(category: str) -> bool:
     return "long_context" in category or "composite" in category
 
 
-def _build_response_parser(model_handler_key: str):
-    """Same parser-builder as the AST agent — see bfcl_v4_ast_agent for rationale."""
-    from bfcl_eval.constants.model_config import local_inference_model_map
+_DIRECT_HANDLER_MODULES = {
+    "Qwen/Qwen3-8B-FC": ("bfcl_eval.model_handler.local_inference.qwen_fc", "QwenFCHandler"),
+    "Qwen/Qwen3-4B-FC": ("bfcl_eval.model_handler.local_inference.qwen_fc", "QwenFCHandler"),
+}
 
-    if model_handler_key not in local_inference_model_map:
-        raise ValueError(f"BFCL handler {model_handler_key!r} not in local_inference_model_map")
-    handler_cls = local_inference_model_map[model_handler_key].model_handler
+
+class _SyntheticChoice:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _SyntheticResponse:
+    def __init__(self, text: str) -> None:
+        self.choices = [_SyntheticChoice(text)]
+
+
+def _build_response_parser(model_handler_key: str):
+    """See bfcl_v4_ast_agent._build_response_parser for rationale.
+
+    Direct handler-module import avoids bfcl_eval.constants.model_config's
+    eager registry import (which pulls Gemini/Anthropic/Cohere/Qwen API
+    SDK chains the Gym container lacks). chat_completions response is
+    adapted to text-completions shape via _SyntheticResponse.
+    """
+    if model_handler_key not in _DIRECT_HANDLER_MODULES:
+        raise ValueError(f"BFCL handler {model_handler_key!r} not yet wired in _DIRECT_HANDLER_MODULES.")
+    module_path, class_name = _DIRECT_HANDLER_MODULES[model_handler_key]
+    import importlib
+
+    module = importlib.import_module(module_path)
+    handler_cls = getattr(module, class_name)
     handler = handler_cls(
         model_name=model_handler_key.replace("-FC", ""),
         temperature=0.0,
@@ -111,8 +135,10 @@ def _build_response_parser(model_handler_key: str):
         is_fc_model=True,
     )
 
-    def parse(raw_response: Dict[str, Any]) -> Dict[str, Any]:
-        parsed = handler._parse_query_response_prompting(raw_response)
+    def parse(raw_chat_response: Dict[str, Any]) -> Dict[str, Any]:
+        content = raw_chat_response["choices"][0]["message"].get("content", "") or ""
+        synthetic = _SyntheticResponse(content)
+        parsed = handler._parse_query_response_prompting(synthetic)
         msg = parsed.get("model_responses_message_for_chat_history") or {}
         tool_calls = msg.get("tool_calls") or []
         tool_calls = [tc for tc in tool_calls if isinstance(tc, dict)]

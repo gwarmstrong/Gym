@@ -78,19 +78,53 @@ def _strip_reasoning(text: Optional[str]) -> str:
     return _THINK_RE.sub("", text).lstrip("\n")
 
 
+_DIRECT_HANDLER_MODULES = {
+    "Qwen/Qwen3-8B-FC": ("bfcl_eval.model_handler.local_inference.qwen_fc", "QwenFCHandler"),
+    "Qwen/Qwen3-4B-FC": ("bfcl_eval.model_handler.local_inference.qwen_fc", "QwenFCHandler"),
+}
+
+
+class _SyntheticChoice:
+    """Stand-in for OpenAI text-completion Choice (has `.text`)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _SyntheticResponse:
+    """Stand-in for an OpenAI text-completion Response object."""
+
+    def __init__(self, text: str) -> None:
+        self.choices = [_SyntheticChoice(text)]
+
+
 def _build_response_parser(model_handler_key: str):
     """Instantiate BFCL's per-model FC handler and return its parse fn.
 
     Mirrors ClientMessageParser._validate_and_setup_client_parsing.
-    """
-    from bfcl_eval.constants.model_config import local_inference_model_map
 
-    if model_handler_key not in local_inference_model_map:
+    We import the handler module DIRECTLY (not through
+    bfcl_eval.constants.model_config) because the registry module eagerly
+    imports every backend (Gemini, Anthropic, Cohere, Qwen API, Mistral,
+    Writer, Bedrock, ...). Each backend pulls in SDKs the lean Gym
+    container lacks (cryptography, soundfile, PIL, ...). Importing the
+    one local-inference handler we need avoids that whole tree.
+
+    Skills' _parse_query_response_prompting expects an
+    OpenAI-text-completions response (`api_response.choices[0].text`).
+    We're calling the chat-completions endpoint, so we adapt content to
+    that shape with _SyntheticResponse.
+    """
+    if model_handler_key not in _DIRECT_HANDLER_MODULES:
         raise ValueError(
-            f"BFCL handler {model_handler_key!r} not in local_inference_model_map. "
-            f"Supported: {sorted(local_inference_model_map.keys())[:10]}..."
+            f"BFCL handler {model_handler_key!r} not yet wired in _DIRECT_HANDLER_MODULES. "
+            f"Add a (module, class) entry to bfcl_v4_ast_agent/app.py."
         )
-    handler_cls = local_inference_model_map[model_handler_key].model_handler
+    module_path, class_name = _DIRECT_HANDLER_MODULES[model_handler_key]
+    import importlib
+
+    module = importlib.import_module(module_path)
+    handler_cls = getattr(module, class_name)
     handler = handler_cls(
         model_name=model_handler_key.replace("-FC", ""),
         temperature=0.0,  # not used during parsing
@@ -98,13 +132,13 @@ def _build_response_parser(model_handler_key: str):
         is_fc_model=True,
     )
 
-    def parse(raw_response: Dict[str, Any]) -> Dict[str, Any]:
-        # bfcl_eval handlers expect a dict with a `choices[0].message`
-        # shape; vLLM's chat-completions response already has that.
-        parsed = handler._parse_query_response_prompting(raw_response)
+    def parse(raw_chat_response: Dict[str, Any]) -> Dict[str, Any]:
+        # Adapt chat-completions message.content to text-completions .text.
+        content = raw_chat_response["choices"][0]["message"].get("content", "") or ""
+        synthetic = _SyntheticResponse(content)
+        parsed = handler._parse_query_response_prompting(synthetic)
         msg = parsed.get("model_responses_message_for_chat_history") or {}
         tool_calls = msg.get("tool_calls") or []
-        # Drop non-dict tool calls (matches Skills' wrapper_response_parser).
         tool_calls = [tc for tc in tool_calls if isinstance(tc, dict)]
         return {
             "content": msg.get("content", "") or "",

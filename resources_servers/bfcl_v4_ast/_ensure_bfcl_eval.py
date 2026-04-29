@@ -28,30 +28,22 @@ BFCL_GIT_COMMIT = "86d0374d0db52623c5092a73f82c22b87b7e9a25"
 BFCL_EVAL_SUBDIR = "berkeley-function-call-leaderboard"
 BFCL_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
-# Gym-container extras that Skills' container has by default but we don't.
-# bfcl_eval pyproject already pins the rest of its deps; we only top up
-# what the Gym container lacks transitively.
-EXTRA_RUNTIME_DEPS = [
-    "cffi>=1.17",
-    "cryptography>=43",
-    # qwen_agent.llm.base imports soundfile at module load; bfcl_eval
-    # transitively imports qwen_agent. Skills has it via its broader
-    # BFCL_REQUIREMENTS chain.
-    "soundfile",
-]
+# Gym-container extras. The agents avoid bfcl_eval.constants.model_config
+# entirely (importing handler modules directly) so we no longer need the
+# whole-tree registry's transitive deps. This minimal list covers what's
+# still required:
+EXTRA_RUNTIME_DEPS: list[str] = []
 
 
 def ensure_bfcl_eval_installed() -> None:
     try:
-        import _cffi_backend  # noqa: F401  # cryptography native backend
         import bfcl_eval  # noqa: F401
 
-        # Probe the failing import chain end-to-end.
-        from bfcl_eval.constants.model_config import (  # noqa: F401
-            local_inference_model_map,
-        )
-        from cryptography.hazmat.bindings._rust import (  # noqa: F401
-            exceptions as _rust_exc,
+        # Probe the only handler the BFCL agents actually use. Avoid the
+        # bfcl_eval.constants.model_config registry — see
+        # _build_response_parser comment in the agents for why.
+        from bfcl_eval.model_handler.local_inference.qwen_fc import (  # noqa: F401
+            QwenFCHandler,
         )
 
         return

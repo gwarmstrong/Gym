@@ -49,6 +49,10 @@ class BfclV4AstResourcesServerConfig(BaseResourcesServerConfig):
 
 
 class BfclV4AstVerifyRequest(BaseVerifyRequest):
+    # Override BaseVerifyRequest.response (NeMoGymResponse) — BFCL flow
+    # carries the parsed predicted_tool_calls/predicted_text forward;
+    # the full Responses-API response object is unused.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     # Parsed structured tool calls produced by the agent's BFCL FC handler.

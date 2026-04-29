@@ -62,6 +62,10 @@ class BfclV4AstAgentRunRequest(BaseRunRequest):
 
 
 class BfclV4AstAgentVerifyRequest(BaseVerifyRequest):
+    # Override BaseVerifyRequest.response (NeMoGymResponse) — BFCL flow
+    # never uses the model's full Responses-API shape; we only carry the
+    # extracted text/tool_calls forward to the resource server.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     predicted_tool_calls: List[Dict[str, Any]] = Field(default_factory=list)

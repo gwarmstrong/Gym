@@ -48,6 +48,9 @@ class BfclV4MultiTurnResourcesServerConfig(BaseResourcesServerConfig):
 
 
 class BfclV4MultiTurnVerifyRequest(BaseVerifyRequest):
+    # Override BaseVerifyRequest.response (NeMoGymResponse) — see
+    # bfcl_v4_ast resource server for rationale.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     # The per-turn shape Skills' multi-turn flow stores: list[turn] of

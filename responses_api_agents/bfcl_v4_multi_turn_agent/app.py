@@ -72,6 +72,9 @@ class BfclV4MultiTurnAgentRunRequest(BaseRunRequest):
 
 
 class BfclV4MultiTurnAgentVerifyRequest(BaseVerifyRequest):
+    # Override BaseVerifyRequest.response (NeMoGymResponse) — see
+    # bfcl_v4_ast_agent for rationale.
+    response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
     # Per-turn list of per-step model responses (Skills' all_model_response shape).

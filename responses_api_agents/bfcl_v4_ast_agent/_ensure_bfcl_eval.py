@@ -29,43 +29,55 @@ BFCL_GIT_COMMIT = "86d0374d0db52623c5092a73f82c22b87b7e9a25"
 BFCL_EVAL_SUBDIR = "berkeley-function-call-leaderboard"
 BFCL_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 
+# bfcl_eval.constants.model_config eagerly imports every handler
+# (Gemini, Anthropic, Cohere, ...) at module load. We only need local
+# inference handlers but pay for all of them. cryptography is a
+# transitive of google.auth required by the Gemini handler — bfcl_eval
+# doesn't pull it via setup.py, so importing the module fails without it.
+EXTRA_RUNTIME_DEPS = ["cryptography>=43"]
+
 
 def ensure_bfcl_eval_installed() -> None:
     try:
         import bfcl_eval  # noqa: F401
+        import cryptography  # noqa: F401
 
         return
     except (ModuleNotFoundError, ImportError):
-        LOG.info("Installing bfcl_eval at runtime (commit %s)", BFCL_GIT_COMMIT)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_dir = Path(tmp) / "gorilla"
-            subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
-            subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
-            cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--no-cache-dir",
-                "--python",
-                sys.executable,
-                str(repo_dir / BFCL_EVAL_SUBDIR),
-                "--extra-index-url",
-                BFCL_EXTRA_INDEX_URL,
-            ]
-            try:
-                subprocess.run(cmd, check=True)
-            except FileNotFoundError:
-                subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-cache-dir",
-                        str(repo_dir / BFCL_EVAL_SUBDIR),
-                        "--extra-index-url",
-                        BFCL_EXTRA_INDEX_URL,
-                    ],
-                    check=True,
-                )
-        LOG.info("bfcl_eval install complete")
+        pass
+
+    LOG.info("Installing bfcl_eval at runtime (commit %s)", BFCL_GIT_COMMIT)
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_dir = Path(tmp) / "gorilla"
+        subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
+        subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--python",
+            sys.executable,
+            str(repo_dir / BFCL_EVAL_SUBDIR),
+            *EXTRA_RUNTIME_DEPS,
+            "--extra-index-url",
+            BFCL_EXTRA_INDEX_URL,
+        ]
+        try:
+            subprocess.run(cmd, check=True)
+        except FileNotFoundError:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-cache-dir",
+                    str(repo_dir / BFCL_EVAL_SUBDIR),
+                    *EXTRA_RUNTIME_DEPS,
+                    "--extra-index-url",
+                    BFCL_EXTRA_INDEX_URL,
+                ],
+                check=True,
+            )
+    LOG.info("bfcl_eval install complete")

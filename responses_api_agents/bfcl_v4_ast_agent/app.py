@@ -73,6 +73,8 @@ class BfclV4AstAgentVerifyRequest(BaseVerifyRequest):
 
 
 class BfclV4AstAgentVerifyResponse(BaseVerifyResponse):
+    # Same response-field relaxation as the request side.
+    response: Dict[str, Any] = Field(default_factory=dict)
     model_config = ConfigDict(extra="allow")
 
 

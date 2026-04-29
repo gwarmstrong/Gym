@@ -1,0 +1,5 @@
+# Memory benchmark prompts are baked in by the agent at run time
+# (it injects the memory-instruction system prompt via BFCL's
+# add_memory_instruction_system_prompt). Placeholder.
+system: ""
+user: ""

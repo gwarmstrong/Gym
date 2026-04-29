@@ -1,0 +1,18 @@
+config_paths:
+  - resources_servers/bfcl_v4_multi_turn/configs/bfcl_v4_multi_turn.yaml
+  - responses_api_agents/bfcl_v4_multi_turn_agent/configs/bfcl_v4_multi_turn_agent.yaml
+
+# Memory benchmark reuses bfcl_v4_multi_turn_agent (same per-turn loop;
+# the agent branches internally on test_category for memory prereq
+# system-prompt injection and state hand-off).
+bfcl_v4_memory_agent:
+  _inherit_from: bfcl_v4_multi_turn_agent
+  responses_api_agents:
+    bfcl_v4_multi_turn_agent:
+      datasets:
+      - name: bfcl_v4_memory
+        type: benchmark
+        jsonl_fpath: benchmarks/bfcl_v4_memory/data/bfcl_v4_memory_benchmark.jsonl
+        prompt_config: null
+        prepare_script: benchmarks/bfcl_v4_memory/prepare.py
+        license: Apache 2.0

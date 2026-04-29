@@ -1,0 +1,18 @@
+config_paths:
+  - resources_servers/bfcl_v4_multi_turn/configs/bfcl_v4_multi_turn.yaml
+  - responses_api_agents/bfcl_v4_multi_turn_agent/configs/bfcl_v4_multi_turn_agent.yaml
+
+# Web search benchmark reuses bfcl_v4_multi_turn_agent. The agent's
+# vendored _bfcl_web_search module is the DuckDuckGo backend (same
+# code Skills uses for web_search categories).
+bfcl_v4_web_search_agent:
+  _inherit_from: bfcl_v4_multi_turn_agent
+  responses_api_agents:
+    bfcl_v4_multi_turn_agent:
+      datasets:
+      - name: bfcl_v4_web_search
+        type: benchmark
+        jsonl_fpath: benchmarks/bfcl_v4_web_search/data/bfcl_v4_web_search_benchmark.jsonl
+        prompt_config: null
+        prepare_script: benchmarks/bfcl_v4_web_search/prepare.py
+        license: Apache 2.0

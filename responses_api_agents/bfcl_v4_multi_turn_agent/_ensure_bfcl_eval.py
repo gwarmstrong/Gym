@@ -40,6 +40,10 @@ EXTRA_RUNTIME_DEPS = [
     "cryptography>=43",
     "soundfile",  # qwen_agent.llm.base
     "Pillow",  # qwen_agent.tools.image_zoom_in_qwen3vl
+    # `ddgs` is the DuckDuckGo backend the web_search categories load when
+    # SERPAPI_API_KEY is unset. _bfcl_web_search.WebSearchBackendUnavailable
+    # is raised on first scenario load if neither is available.
+    "ddgs",
 ]
 
 

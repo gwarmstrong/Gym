@@ -157,6 +157,17 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
         return {"accuracy": float(bool(rollout.get("is_correct")))}
 
     def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        # Drop memory prereq tasks before grading. Memory categories ship
+        # prereq sibling rows that populate stateful memory ahead of the
+        # scored row. They flow through the agent so the MemoryAPI flush
+        # hook fires, but `bfcl_eval`'s `runner` skips
+        # `is_memory_prereq(test_category)` ids — and
+        # `_subset_entries_by_model_ids` would return empty
+        # `prompt`/`possible_answer` lists if we passed them to the grader
+        # (the assertion in `agentic_runner` fires with `len(prompt)=0`).
+        # Excluding here keeps prereqs out of the pass@k denominator too.
+        tasks = [rollouts for rollouts in tasks if rollouts and "_prereq_" not in str(rollouts[0].get("id", ""))]
+
         # Group by (test_category, rollout_index) — see bfcl_v4_ast for rationale.
         by_cat_idx: Dict[tuple[str, int], List[Dict[str, Any]]] = {}
         for task_rollouts in tasks:

@@ -40,6 +40,10 @@ EXTRA_RUNTIME_DEPS = [
     "cryptography>=43",
     "soundfile",  # qwen_agent.llm.base
     "Pillow",  # qwen_agent.tools.image_zoom_in_qwen3vl
+    # bfcl_eval grader replays the web_search backend on scored rows
+    # (see _evaluate_single_agentic_entry → _load_scenario), so the
+    # resource-server venv needs the same backend dep as the agent venv.
+    "ddgs",
 ]
 
 

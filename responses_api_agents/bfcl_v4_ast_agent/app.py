@@ -72,6 +72,14 @@ class BfclV4AstAgentVerifyRequest(BaseVerifyRequest):
     test_category: str
     predicted_tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
     predicted_text: str = ""
+    # Pass through Skills-style sample fields for bfcl_eval CLI grading.
+    # Skills' eval_bfcl writes the full row (including function/tools/
+    # question/single_turn) to BFCL_v4_<cat>_result.json; bfcl_eval's
+    # grader cross-references some of them.
+    function: List[Dict[str, Any]] = Field(default_factory=list)
+    tools: List[Dict[str, Any]] = Field(default_factory=list)
+    question: List[List[Dict[str, Any]]] = Field(default_factory=list)
+    single_turn: bool = True
 
 
 class BfclV4AstAgentVerifyResponse(BaseVerifyResponse):
@@ -305,6 +313,10 @@ class BfclV4AstAgent(SimpleResponsesAPIAgent):
             test_category=test_category,
             predicted_tool_calls=parsed["tool_calls"],
             predicted_text=parsed["content"],
+            function=meta.get("function", []),
+            tools=tools,
+            question=meta.get("question", []),
+            single_turn=meta.get("single_turn", True),
         )
 
         verify_response = await self.server_client.post(

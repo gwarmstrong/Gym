@@ -55,13 +55,15 @@ class BfclV4AstVerifyRequest(BaseVerifyRequest):
     response: Dict[str, Any] = Field(default_factory=dict)
     id: str
     test_category: str
-    # Parsed structured tool calls produced by the agent's BFCL FC handler.
-    # Each entry: {"name": str, "arguments": dict|str (JSON)}.
     predicted_tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
-    # The textual content the model emitted (after reasoning strip),
-    # included for debugging and so the grader's relevance/irrelevance
-    # checks can see whether the model abstained vs answered.
     predicted_text: str = ""
+    # Skills-parity sample fields for bfcl_eval CLI grading. Skills'
+    # _convert_to_bfcl_format includes these in BFCL_v4_<cat>_result.json
+    # and bfcl_eval's grader cross-references them at scoring time.
+    function: List[Dict[str, Any]] = Field(default_factory=list)
+    tools: List[Dict[str, Any]] = Field(default_factory=list)
+    question: List[List[Dict[str, Any]]] = Field(default_factory=list)
+    single_turn: bool = True
 
 
 class BfclV4AstVerifyResponse(BaseVerifyResponse):
@@ -105,10 +107,10 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
     def _to_bfcl_result_row(rollout: Dict[str, Any]) -> Dict[str, Any]:
         """Convert one Gym rollout dict to BFCL's expected per-row format.
 
-        BFCL evaluate reads JSON lines like:
-          {"id": "<id>", "result": [{"<name>": "<args_json>"}, ...]}
-        where `result` is a list of single-key dicts mapping function name
-        to JSON-encoded arguments string.
+        Mirror Skills' _convert_to_bfcl_format: write the full sample row
+        (id, function, tools, question, single_turn, generation, result)
+        to BFCL_v4_<cat>_result.json. bfcl_eval's grader cross-references
+        the function/tools fields when scoring.
         """
         result_calls = []
         for fc in rollout.get("predicted_tool_calls", []) or []:
@@ -122,7 +124,15 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
         if not result_calls:
             result_calls = rollout.get("predicted_text", "") or ""
 
-        return {"id": rollout["id"], "result": result_calls}
+        return {
+            "id": rollout["id"],
+            "function": rollout.get("function", []),
+            "tools": rollout.get("tools", []),
+            "question": rollout.get("question", []),
+            "single_turn": rollout.get("single_turn", True),
+            "generation": result_calls,
+            "result": result_calls,
+        }
 
     def _run_bfcl_eval_for_category(
         self,

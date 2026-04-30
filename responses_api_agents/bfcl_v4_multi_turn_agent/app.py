@@ -362,17 +362,45 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                 }
                 parsed = parser(synthetic)
 
-                # Build the assistant message for chat history.
+                # Build the assistant message for chat history. vllm_model's
+                # pydantic schema (NeMoGymChatCompletionAssistantMessageParam)
+                # requires each tool_call to be the OpenAI-shape
+                #   {id, type: "function", function: {name, arguments(str)}}
+                # — BFCL's FC handler emits the flat {name, arguments(dict)}
+                # form, so we wrap here. Generate per-call IDs and reuse
+                # them on the matching tool messages so vllm_model's schema
+                # validation passes (tool_call_id is also required).
+                import uuid
+
+                openai_tool_calls = []
+                tool_call_ids = []
+                for tc in parsed["tool_calls"]:
+                    call_id = tc.get("id") or tc.get("call_id") or f"call_{uuid.uuid4().hex[:8]}"
+                    args_val = tc.get("arguments", {})
+                    args_str = args_val if isinstance(args_val, str) else json.dumps(args_val)
+                    openai_tool_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("name", ""),
+                                "arguments": args_str,
+                            },
+                        }
+                    )
+                    tool_call_ids.append(call_id)
+
                 assistant_msg: Dict[str, Any] = {
                     "role": "assistant",
-                    "content": parsed["content"],
+                    "content": parsed["content"] or "",
                 }
-                if parsed["tool_calls"]:
-                    assistant_msg["tool_calls"] = parsed["tool_calls"]
+                if openai_tool_calls:
+                    assistant_msg["tool_calls"] = openai_tool_calls
                 chat_messages.append(assistant_msg)
 
                 # Skills' `generation` shape: list of {name: args_json} dicts
                 # if there were calls, else the raw string content.
+                formatted_calls: List[Dict[str, str]] = []
                 if parsed["tool_calls"]:
                     formatted_calls = self._format_function_call_dict_list(parsed["tool_calls"])
                     current_turn_response.append(formatted_calls)
@@ -395,13 +423,13 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                     test_entry_id=row_id,
                     long_context=_is_long_context(test_category),
                 )
-                # Feed results back as `tool` messages.
-                for exec_result, tc in zip(exec_results, parsed["tool_calls"]):
+                # Feed results back as `tool` messages with matched IDs.
+                for exec_result, call_id in zip(exec_results, tool_call_ids):
                     chat_messages.append(
                         {
                             "role": "tool",
                             "content": exec_result,
-                            "tool_call_id": tc.get("id") or tc.get("call_id") or "",
+                            "tool_call_id": call_id,
                         }
                     )
 

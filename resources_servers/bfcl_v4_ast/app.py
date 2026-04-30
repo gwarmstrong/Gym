@@ -17,7 +17,6 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -216,23 +215,34 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
                 idx = int(rollout.get("_ng_rollout_index", 0))
                 by_cat_idx.setdefault((cat, idx), []).append(rollout)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            work_dir = Path(tmp)
-            for (category, idx), rollouts in by_cat_idx.items():
-                bfcl_rows = [self._to_bfcl_result_row(r) for r in rollouts]
-                # Use a per-(category, idx) subdir so concurrent bfcl_eval
-                # subprocesses don't collide on result/score paths.
-                stage_dir = work_dir / f"{category}_idx{idx}"
-                stage_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    wrong_ids = self._run_bfcl_eval_for_category(category, bfcl_rows, stage_dir)
-                except subprocess.CalledProcessError as exc:
-                    LOG.error("bfcl_eval failed for %s idx=%d: %s", category, idx, exc)
-                    for r in rollouts:
-                        r["is_correct"] = False
-                    continue
-                for r, bfcl_row in zip(rollouts, bfcl_rows):
-                    r["is_correct"] = bfcl_row["id"] not in wrong_ids
+        # Persist work dir to lustre so we can post-mortem result + score
+        # files. /tmp is ephemeral per job; lustre survives the job.
+        # ng_collect_rollouts sets NG_OUTPUT_DIR / picks /workspace/...
+        # but resource server doesn't see those; use a stable path.
+        debug_root = Path("/workspace/migrate-gym-bfcl-v4/bfcl_eval_debug")
+        debug_root.mkdir(parents=True, exist_ok=True)
+        LOG.info("BFCL eval work dir: %s", debug_root)
+        for (category, idx), rollouts in by_cat_idx.items():
+            bfcl_rows = [self._to_bfcl_result_row(r) for r in rollouts]
+            stage_dir = debug_root / f"{category}_idx{idx}"
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                wrong_ids = self._run_bfcl_eval_for_category(category, bfcl_rows, stage_dir)
+            except subprocess.CalledProcessError as exc:
+                LOG.error("bfcl_eval failed for %s idx=%d: %s", category, idx, exc)
+                for r in rollouts:
+                    r["is_correct"] = False
+                continue
+            LOG.info(
+                "bfcl_eval done for %s idx=%d: %d/%d wrong (rollouts=%d)",
+                category,
+                idx,
+                len(wrong_ids),
+                len(bfcl_rows),
+                len(rollouts),
+            )
+            for r, bfcl_row in zip(rollouts, bfcl_rows):
+                r["is_correct"] = bfcl_row["id"] not in wrong_ids
 
         # Now compute pass@k / pass@1[avg-of-k] / majority@k from is_correct.
         metrics, _all_scores, _score_names, _max_k = compute_pass_majority_metrics(

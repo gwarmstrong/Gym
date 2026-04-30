@@ -6,4 +6,4 @@ bfcl_v4_multi_turn:
       verified: false
       description: BFCL v4 multi-turn family — agentic tool-execution dialogues (multi_turn_*, memory_*, web_search_*) graded with bfcl_eval's multi-turn / memory / web-search checkers.
       value: Improve multi-turn function calling, stateful tool usage, memory persistence, and web-search-augmented dialogue.
-      model_handler: Qwen/Qwen3-8B-FC
+      grader_handler: o4-mini-2025-04-16-FC

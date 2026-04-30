@@ -39,11 +39,15 @@ from nemo_gym.reward_profile import (
 
 
 LOG = logging.getLogger(__name__)
-DEFAULT_MODEL_HANDLER = "Qwen/Qwen3-8B-FC"
+# Generic FC handler whose decode_ast accepts the parsed list-of-dicts
+# format that bfcl_v4_multi_turn_agent emits. See bfcl_v4_ast/app.py for
+# the full rationale (agent uses Qwen/Qwen3-8B-FC for parsing; grader
+# uses o4-mini for AST decoding).
+DEFAULT_GRADER_HANDLER = "o4-mini-2025-04-16-FC"
 
 
 class BfclV4MultiTurnResourcesServerConfig(BaseResourcesServerConfig):
-    model_handler: str = DEFAULT_MODEL_HANDLER
+    grader_handler: str = DEFAULT_GRADER_HANDLER
     eval_timeout: int = 1800  # multi-turn graders are slower than AST
 
 
@@ -99,7 +103,7 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
     def _run_bfcl_eval_for_category(self, category: str, rows: List[Dict[str, Any]], work_dir: Path) -> set[str]:
         from bfcl_eval.utils import get_directory_structure_by_category
 
-        model_name = self.config.model_handler.replace("/", "_")
+        model_name = self.config.grader_handler.replace("/", "_")
         result_dir = work_dir / "result" / model_name
         result_dir.mkdir(parents=True, exist_ok=True)
         result_file = result_dir / f"BFCL_v4_{category}_result.json"
@@ -117,7 +121,7 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
             "bfcl_eval",
             "evaluate",
             "--model",
-            self.config.model_handler,
+            self.config.grader_handler,
             "--test-category",
             category,
             "--partial-eval",  # Gym scores only rollouts collected this run

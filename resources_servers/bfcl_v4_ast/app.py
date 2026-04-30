@@ -33,16 +33,30 @@ from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_met
 
 LOG = logging.getLogger(__name__)
 
-# Same handler Skills CI pairs with Qwen3-4B / Qwen3-8B; lives in
-# bfcl_eval.constants.model_config.local_inference_model_map.
-DEFAULT_MODEL_HANDLER = "Qwen/Qwen3-8B-FC"
+# Two distinct handler keys are in play:
+#
+# * AGENT-side (parsing model output): Qwen/Qwen3-8B-FC — its
+#   _parse_query_response_prompting reads the model's raw <tool_call>…
+#   text and returns parsed tool calls. The agent uses this.
+#
+# * GRADER-side (bfcl_eval CLI --model arg): o4-mini-2025-04-16-FC
+#   (or any generic FC handler). Its decode_ast accepts the parsed
+#   list-of-dicts shape we already emit and matches it against
+#   possible_answer. Skills uses the same default
+#   (BFCLEvaluatorConfig.model = "o4-mini-2025-04-16-FC", with the
+#   comment "Uses the same eval as Llama-Nemotron").
+#
+# Using the same handler for both sides — i.e. passing Qwen/Qwen3-8B-FC
+# to the grader CLI — fails with 'Failed to decode AST. expected string
+# or bytes-like object, got list' because QwenFCHandler.decode_ast
+# regex-extracts <tool_call> from raw text and we already pre-parsed.
+DEFAULT_GRADER_HANDLER = "o4-mini-2025-04-16-FC"
 
 
 class BfclV4AstResourcesServerConfig(BaseResourcesServerConfig):
-    # Handler key in bfcl_eval.local_inference_model_map. Must match the
-    # one the agent uses for parsing — otherwise the parsed tool calls
-    # the agent emits and the format the grader expects will diverge.
-    model_handler: str = DEFAULT_MODEL_HANDLER
+    # Grader-side FC handler key. Different from the agent's parsing
+    # handler — see comment above.
+    grader_handler: str = DEFAULT_GRADER_HANDLER
     # Subprocess timeout (seconds) for `python -m bfcl_eval evaluate` per category.
     eval_timeout: int = 600
 
@@ -142,7 +156,7 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
         """Run `python -m bfcl_eval evaluate` for one category. Returns wrong-id set."""
         from bfcl_eval.utils import get_directory_structure_by_category
 
-        model_name = self.config.model_handler.replace("/", "_")
+        model_name = self.config.grader_handler.replace("/", "_")
         result_dir = work_dir / "result" / model_name
         result_dir.mkdir(parents=True, exist_ok=True)
         result_file = result_dir / f"BFCL_v4_{category}_result.json"
@@ -163,7 +177,7 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
             "bfcl_eval",
             "evaluate",
             "--model",
-            self.config.model_handler,
+            self.config.grader_handler,
             "--test-category",
             category,
             # Gym's compute_metrics gets only the rollouts collected for

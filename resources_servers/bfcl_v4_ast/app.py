@@ -237,7 +237,7 @@ class BfclV4AstResourcesServer(SimpleResourcesServer):
 
         subset = compute_subset_metrics(
             tasks,
-            field="test_category",
+            subset_key="test_category",
             score_fn=self._score_fn,
             answer_key=None,
         )

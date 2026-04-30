@@ -210,6 +210,14 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             json=chat_body,
             cookies=cookies,
         )
+        if response.status >= 400:
+            err_body = (await response.content.read()).decode("utf-8", "replace")
+            LOG.error(
+                "vllm_model /v1/chat/completions returned %d. body sent (truncated 1KB): %s. response: %s",
+                response.status,
+                json.dumps(chat_body, default=str)[:1024],
+                err_body[:2048],
+            )
         try:
             await raise_for_status(response)
         except Exception as exc:  # noqa: BLE001
@@ -241,6 +249,21 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         raise NotImplementedError("bfcl_v4_multi_turn_agent does not expose /v1/responses; use /run.")
 
     async def run(
+        self,
+        request: Request,
+        body: BfclV4MultiTurnAgentRunRequest,
+    ) -> BfclV4MultiTurnAgentVerifyResponse:
+        try:
+            return await self._run_inner(request, body)
+        except Exception:
+            LOG.exception(
+                "bfcl_v4_multi_turn_agent.run() failed for id=%s test_category=%s",
+                (body.verifier_metadata or {}).get("id", ""),
+                (body.verifier_metadata or {}).get("test_category", ""),
+            )
+            raise
+
+    async def _run_inner(
         self,
         request: Request,
         body: BfclV4MultiTurnAgentRunRequest,

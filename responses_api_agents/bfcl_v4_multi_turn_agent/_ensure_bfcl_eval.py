@@ -44,6 +44,10 @@ EXTRA_RUNTIME_DEPS = [
     # SERPAPI_API_KEY is unset. _bfcl_web_search.WebSearchBackendUnavailable
     # is raised on first scenario load if neither is available.
     "ddgs",
+    # bfcl_eval/eval_checker/multi_turn_eval/func_source_code/memory_vector.py
+    # imports sentence_transformers, which transitively imports sklearn.
+    # Without it the memory_vector category fails its first prereq run.
+    "scikit-learn",
 ]
 
 
@@ -96,7 +100,7 @@ def _extras_importable() -> bool:
     # backend reaches at request time. Verify the pip name resolves to an
     # importable module so a freshly-added extra forces a top-up install
     # even when the agent's persisted venv already has bfcl_eval.
-    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs"]
+    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs", "sklearn"]
     for mod in extra_module_names:
         try:
             __import__(mod)

@@ -280,6 +280,33 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         # Multi_turn_miss_func splits introduce extra functions partway through.
         holdout_function: Dict[str, list] = meta.get("missed_function", {})
 
+        # memory_vector imports SentenceTransformer("all-MiniLM-L6-v2") at
+        # module load time, which hits HF Hub. With HF_HUB_OFFLINE=1 (set
+        # for the agent venv to keep cluster runs hermetic) this fails
+        # before the rollout can begin. Skills' baseline shows the same
+        # gap — bfcl_v4.memory_vector/ has no output-rs*.jsonl and only
+        # an empty summarized-results dir. Cleanly skip the category so
+        # both pipelines align on the same coverage gap. Pre-caching
+        # all-MiniLM-L6-v2 in $HF_HOME would lift this restriction on
+        # both sides; tracked as follow-up work.
+        if test_category == "memory_vector":
+            skip_request = BfclV4MultiTurnAgentVerifyRequest(
+                responses_create_params=body.responses_create_params,
+                response={"output_text": ""},
+                id=row_id,
+                test_category=test_category,
+                generation=[],
+                error="memory_vector skipped (all-MiniLM-L6-v2 not cached; Skills baseline also missed this category)",
+            )
+            verify_response = await self.server_client.post(
+                server_name=self.config.resources_server.name,
+                url_path="/verify",
+                json=skip_request.model_dump(),
+                cookies=cookies,
+            )
+            await raise_for_status(verify_response)
+            return BfclV4MultiTurnAgentVerifyResponse.model_validate(await get_response_json(verify_response))
+
         # Memory category: inject memory instruction system prompt now that
         # the memory instance state is known. Skills runs an empty
         # execute_multi_turn_func_call to materialize the instance, then

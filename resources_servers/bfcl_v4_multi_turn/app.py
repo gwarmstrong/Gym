@@ -168,6 +168,14 @@ class BfclV4MultiTurnResourcesServer(SimpleResourcesServer):
         # Excluding here keeps prereqs out of the pass@k denominator too.
         tasks = [rollouts for rollouts in tasks if rollouts and "_prereq_" not in str(rollouts[0].get("id", ""))]
 
+        # Drop memory_vector tasks before grading. The agent skips
+        # memory_vector at run time (see bfcl_v4_multi_turn_agent.run for
+        # rationale: SentenceTransformer("all-MiniLM-L6-v2") is loaded at
+        # bfcl_eval module import and HF Hub is offline; Skills' baseline
+        # has the same gap). Excluding here also avoids invoking
+        # bfcl_eval's grader on the empty rollouts.
+        tasks = [rollouts for rollouts in tasks if rollouts and rollouts[0].get("test_category") != "memory_vector"]
+
         # Group by (test_category, rollout_index) — see bfcl_v4_ast for rationale.
         by_cat_idx: Dict[tuple[str, int], List[Dict[str, Any]]] = {}
         for task_rollouts in tasks:

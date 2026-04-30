@@ -44,8 +44,10 @@ EXTRA_RUNTIME_DEPS = [
     # (see _evaluate_single_agentic_entry → _load_scenario), so the
     # resource-server venv needs the same backend dep as the agent venv.
     "ddgs",
-    # memory_vector.py imports sentence_transformers → sklearn.
+    # memory_vector.py imports sentence_transformers → sklearn → scipy/numpy.
     "scikit-learn",
+    "scipy",
+    "numpy",
 ]
 
 
@@ -98,7 +100,7 @@ def _extras_importable() -> bool:
     # backend reaches at request time. Verify the pip name resolves to an
     # importable module so a freshly-added extra forces a top-up install
     # even when the resource server's persisted venv already has bfcl_eval.
-    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs", "sklearn"]
+    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs", "sklearn", "scipy", "numpy"]
     for mod in extra_module_names:
         try:
             __import__(mod)

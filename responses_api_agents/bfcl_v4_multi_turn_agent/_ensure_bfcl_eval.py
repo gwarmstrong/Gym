@@ -45,9 +45,13 @@ EXTRA_RUNTIME_DEPS = [
     # is raised on first scenario load if neither is available.
     "ddgs",
     # bfcl_eval/eval_checker/multi_turn_eval/func_source_code/memory_vector.py
-    # imports sentence_transformers, which transitively imports sklearn.
-    # Without it the memory_vector category fails its first prereq run.
+    # imports sentence_transformers, which transitively imports sklearn,
+    # scipy, and numpy. uv's install of `scikit-learn` alone does NOT
+    # pull scipy/numpy here (sentence_transformers is already in the
+    # persisted venv without them), so we list them explicitly.
     "scikit-learn",
+    "scipy",
+    "numpy",
 ]
 
 
@@ -100,7 +104,7 @@ def _extras_importable() -> bool:
     # backend reaches at request time. Verify the pip name resolves to an
     # importable module so a freshly-added extra forces a top-up install
     # even when the agent's persisted venv already has bfcl_eval.
-    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs", "sklearn"]
+    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs", "sklearn", "scipy", "numpy"]
     for mod in extra_module_names:
         try:
             __import__(mod)

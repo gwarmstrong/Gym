@@ -47,13 +47,37 @@ EXTRA_RUNTIME_DEPS = [
 ]
 
 
-def ensure_bfcl_eval_installed() -> None:
-    # Probe ALL imports the runtime needs:
-    #   - bfcl_eval itself
-    #   - QwenFCHandler (used directly by agents, bypasses the registry)
-    #   - bfcl_eval.constants.model_config (the CLI subprocess uses this)
-    #     — touches qwen_agent which transitively imports PIL/soundfile,
-    #     so the import_module success implies all those deps are present.
+def _pip_install(stage_args: list[str]) -> None:
+    uv_cmd = [
+        "uv",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        "--python",
+        sys.executable,
+        *stage_args,
+        "--extra-index-url",
+        BFCL_EXTRA_INDEX_URL,
+    ]
+    try:
+        subprocess.run(uv_cmd, check=True)
+    except FileNotFoundError:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-cache-dir",
+                *stage_args,
+                "--extra-index-url",
+                BFCL_EXTRA_INDEX_URL,
+            ],
+            check=True,
+        )
+
+
+def _bfcl_eval_importable() -> bool:
     try:
         import bfcl_eval  # noqa: F401
         from bfcl_eval.constants.model_config import (  # noqa: F401
@@ -62,52 +86,43 @@ def ensure_bfcl_eval_installed() -> None:
         from bfcl_eval.model_handler.local_inference.qwen_fc import (  # noqa: F401
             QwenFCHandler,
         )
-
-        return
     except (ModuleNotFoundError, ImportError):
-        pass
+        return False
+    return True
 
-    LOG.info("Installing bfcl_eval at runtime (commit %s)", BFCL_GIT_COMMIT)
-    with tempfile.TemporaryDirectory() as tmp:
-        repo_dir = Path(tmp) / "gorilla"
-        subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
-        subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
-        # Two-stage install:
-        #   1. bfcl_eval alone — let it pull its own pinned deps
-        #      (google-genai==1.24.0, qwen-agent, anthropic, etc.). uv's
-        #      strict resolver rejects mixing those with our looser pins
-        #      from SKILLS_BFCL_REQUIREMENTS.
-        #   2. Top up Gym-container extras (cffi/cryptography/soundfile)
-        #      separately. These don't conflict with bfcl_eval's pins.
-        for stage_args in (
-            [str(repo_dir / BFCL_EVAL_SUBDIR)],
-            list(EXTRA_RUNTIME_DEPS),
-        ):
-            uv_cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--no-cache-dir",
-                "--python",
-                sys.executable,
-                *stage_args,
-                "--extra-index-url",
-                BFCL_EXTRA_INDEX_URL,
-            ]
-            try:
-                subprocess.run(uv_cmd, check=True)
-            except FileNotFoundError:
-                subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-cache-dir",
-                        *stage_args,
-                        "--extra-index-url",
-                        BFCL_EXTRA_INDEX_URL,
-                    ],
-                    check=True,
-                )
-    LOG.info("bfcl_eval install complete")
+
+def _extras_importable() -> bool:
+    # Each EXTRA_RUNTIME_DEP gates a code path the registry / web_search
+    # backend reaches at request time. Verify the pip name resolves to an
+    # importable module so a freshly-added extra forces a top-up install
+    # even when the resource server's persisted venv already has bfcl_eval.
+    extra_module_names = ["cffi", "cryptography", "soundfile", "PIL", "ddgs"]
+    for mod in extra_module_names:
+        try:
+            __import__(mod)
+        except (ModuleNotFoundError, ImportError):
+            return False
+    return True
+
+
+def ensure_bfcl_eval_installed() -> None:
+    # Probe imports separately — bfcl_eval persists in the resource
+    # server's lustre venv across runs, so the early-return path used to
+    # silently skip newly-added EXTRA_RUNTIME_DEPS. Run each install only
+    # when needed.
+    if not _bfcl_eval_importable():
+        LOG.info("Installing bfcl_eval at runtime (commit %s)", BFCL_GIT_COMMIT)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp) / "gorilla"
+            subprocess.run(["git", "clone", REPO_URL, str(repo_dir)], check=True)
+            subprocess.run(["git", "checkout", BFCL_GIT_COMMIT], check=True, cwd=str(repo_dir))
+            # bfcl_eval alone — let it pull its own pinned deps
+            # (google-genai==1.24.0, qwen-agent, anthropic, etc.). uv's
+            # strict resolver rejects mixing those with our looser pins.
+            _pip_install([str(repo_dir / BFCL_EVAL_SUBDIR)])
+        LOG.info("bfcl_eval install complete")
+
+    if not _extras_importable():
+        LOG.info("Installing bfcl_eval extras: %s", EXTRA_RUNTIME_DEPS)
+        _pip_install(list(EXTRA_RUNTIME_DEPS))
+        LOG.info("bfcl_eval extras install complete")

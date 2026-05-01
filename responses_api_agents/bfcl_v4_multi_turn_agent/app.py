@@ -241,6 +241,24 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             # that diverges from Skills' rollout pipeline (which sends
             # the rendered text without an additional BOS).
             "add_special_tokens": False,
+            # vLLM defaults skip_special_tokens=True, which strips
+            # <tool_call>/</tool_call> tokens from the decoded output —
+            # the QwenFCHandler regex-extracts those exact tokens to
+            # rebuild structured tool calls. Mirror Skills' vllm.py
+            # builder which sets skip_special_tokens=False.
+            "skip_special_tokens": False,
+            # generation_config.json on Qwen3-* declares top_k=20 which
+            # vLLM applies when no explicit top_k is sent (logged as
+            # "Default vLLM sampling parameters have been overridden by
+            # the model's generation_config.json"). Skills' vllm.py
+            # builder sends top_k=-1 by default, disabling the filter.
+            # The mismatch is a sampling divergence vs Skills.
+            "top_k": -1,
+            # spaces_between_special_tokens=True would inject spaces
+            # around <|im_end|> / <tool_call> etc when decoding —
+            # subtle output divergence vs Skills (which sends
+            # spaces_between_special_tokens: False via extra_body).
+            "extra_body": {"spaces_between_special_tokens": False},
         }
         for src, dst in [
             ("temperature", "temperature"),

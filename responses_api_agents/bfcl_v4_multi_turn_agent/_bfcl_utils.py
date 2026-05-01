@@ -95,6 +95,7 @@ def execute_multi_turn_func_call(
     involved_classes: list,
     test_entry_id: str,
     long_context: bool = False,
+    rollout_index: int = 0,
 ) -> tuple[list[str], dict]:
     """
     Execute the function calls in the list.
@@ -111,8 +112,16 @@ def execute_multi_turn_func_call(
     involved_instances = {}
     for class_name in involved_classes:
         module_name = CLASS_FILE_PATH_MAPPING[class_name]
-        # TODO: Handler the model name issue from handler more elegantly
-        instance_name = f"sample_model_{test_entry_id}_{class_name}_instance"
+        # Skills' bfcl_utils.py uses the same `globals()`-keyed pattern,
+        # but Skills runs one process per (category, seed) so test_entry_id
+        # is unique within a process. Gym runs all rollouts in a single
+        # process — with `+num_repeats=N`, the same test_entry_id appears
+        # N times and would silently share class state across seeds (and
+        # even across concurrent rollouts when run async). Append the
+        # rollout_index so each seed gets an isolated GorillaFileSystem /
+        # MathAPI / etc. Without this, multi_turn pass@1 collapses
+        # because seed-1 inherits seed-0's leftover filesystem state.
+        instance_name = f"sample_model_{test_entry_id}_seed{rollout_index}_{class_name}_instance"
         instance_name = re.sub(r"[-./]", "_", instance_name)
         if instance_name not in globals():
             module = importlib.import_module(module_name)

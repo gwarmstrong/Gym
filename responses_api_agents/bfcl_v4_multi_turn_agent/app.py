@@ -288,6 +288,30 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         involved_classes = list(meta.get("involved_classes", []))
         # Multi_turn_miss_func splits introduce extra functions partway through.
         holdout_function: Dict[str, list] = meta.get("missed_function", {})
+        # +num_repeats=N +num_repeats_add_seed=true makes the rollout client
+        # set responses_create_params.metadata.extra_body = {"seed": k} for
+        # k in 0..N-1. We pass `k` to execute_multi_turn_func_call as
+        # rollout_index so each seed gets an isolated GorillaFileSystem /
+        # MathAPI / etc instance — without this, all N seeds of the same
+        # task share one stateful instance via globals(), and seed-1
+        # inherits seed-0's leftover filesystem state. Skills doesn't hit
+        # this because it runs each seed in a separate process.
+        rollout_index = 0
+        try:
+            rcp = body.responses_create_params
+            md = getattr(rcp, "metadata", None) if rcp is not None else None
+            if md is not None:
+                eb_raw = md.get("extra_body") if isinstance(md, dict) else getattr(md, "extra_body", None)
+                if isinstance(eb_raw, str):
+                    eb = json.loads(eb_raw)
+                elif isinstance(eb_raw, dict):
+                    eb = eb_raw
+                else:
+                    eb = {}
+                if isinstance(eb.get("seed"), int):
+                    rollout_index = eb["seed"]
+        except Exception:  # noqa: BLE001
+            rollout_index = 0
 
         # memory_vector imports SentenceTransformer("all-MiniLM-L6-v2") at
         # module load time, which hits HF Hub. With HF_HUB_OFFLINE=1 (set
@@ -332,6 +356,7 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                 involved_classes,
                 test_entry_id=row_id,
                 long_context=_is_long_context(test_category),
+                rollout_index=rollout_index,
             )
             assert len(involved_instances) == 1
             memory_instance: MemoryAPI = list(involved_instances.values())[0]
@@ -458,6 +483,7 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                     involved_classes,
                     test_entry_id=row_id,
                     long_context=_is_long_context(test_category),
+                    rollout_index=rollout_index,
                 )
                 # Feed results back as `tool` messages with matched IDs.
                 for exec_result, call_id in zip(exec_results, tool_call_ids):

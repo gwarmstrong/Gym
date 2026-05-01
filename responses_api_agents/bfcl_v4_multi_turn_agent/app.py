@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, Request
@@ -56,7 +57,7 @@ from responses_api_agents.bfcl_v4_multi_turn_agent._bfcl_utils import (
 
 
 LOG = logging.getLogger(__name__)
-_END_REASONING = "</think>"
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 class BfclV4MultiTurnAgentConfig(BaseResponsesAPIAgentConfig):
@@ -90,19 +91,9 @@ class BfclV4MultiTurnAgentVerifyResponse(BaseVerifyResponse):
 
 
 def _strip_reasoning(text: Optional[str]) -> str:
-    """Match Skills' BFCLGenerationTask._parse_reasoning_from_message_content
-    exactly: split on the end-of-reasoning marker `</think>` and take the
-    text after it; if the marker isn't present, return empty string
-    (i.e. the reasoning never closed and we drop everything). The previous
-    regex-based variant kept any text that lacked a closing `</think>`,
-    which left assistant chat-history messages with diverging text vs
-    Skills and could change the next turn's behavior.
-    """
     if not text:
         return ""
-    if _END_REASONING in text:
-        return text.split(_END_REASONING)[-1].lstrip("\n")
-    return ""
+    return _THINK_RE.sub("", text).lstrip("\n")
 
 
 def _is_memory(category: str) -> bool:

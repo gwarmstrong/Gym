@@ -43,6 +43,33 @@ ng_collect_rollouts \
     +num_repeats=1
 ```
 
+## Two agents in `configs/dsbench_da.yaml`
+
+`dsbench_da_simple_agent` (defined alongside the resource server in
+this config) is a verifier-only smoke agent: it points at the
+`dsbench_da` server directly with no tool execution and consumes
+`data/example.jsonl`. Use it for `ng_prepare_data … +mode=example_validation`
+and for end-to-end smoke runs against a remote OpenAI-compatible
+endpoint without spinning up a python sandbox.
+
+The dsbench_da **benchmark** is wired up in
+`benchmarks/dsbench_da/config.yaml` with a separate
+`dsbench_da_benchmark_agent` that inherits from `ns_tools_simple_agent`
+so it gets the local DirectPythonTool sandbox (which the model needs
+to read the per-task Excel files).
+
+## Default verifier override at the CLI
+
+`ns_tools.yaml` ships `default_verifier: math_with_judge`. Chained
+configs load AFTER the entry-point file in OmegaConf's merge order,
+so a top-level `ns_tools.resources_servers.ns_tools.default_verifier:
+dsbench_da` in `benchmarks/dsbench_da/config.yaml` would be silently
+overwritten back to `math_with_judge`. The recipe's
+`run_dsbench_da_gym.py` therefore passes
+`++ns_tools.resources_servers.ns_tools.default_verifier=dsbench_da` at
+the CLI. Each prepared row also carries `verifier_type: dsbench_da`,
+so per-sample dispatch is unambiguous regardless of the default.
+
 ## Reasoning-parser note
 
 When serving a reasoning-style policy (Nemotron-3, DeepSeek-R1, etc.),

@@ -111,7 +111,7 @@ def _search_boxed(string: str) -> Optional[str]:
     if "\\boxed" not in string:
         return None
     idx = string.rfind("\\boxed")
-    if idx < 0:
+    if idx < 0:  # pragma: no cover  -- unreachable: guarded by line above
         idx = string.rfind("\\fbox")
         if idx < 0:
             return None

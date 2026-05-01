@@ -33,10 +33,12 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseOutputText,
 )
 from nemo_gym.server_utils import ServerClient
+from resources_servers.dsbench_da import app as dsbench_app
 from resources_servers.dsbench_da.app import (
     DSBenchDAResourcesServer,
     DSBenchDAResourcesServerConfig,
     DSBenchDAVerifyRequest,
+    _math_equal,
     extract_dsbench_answer,
     relaxed_equal,
 )
@@ -67,6 +69,11 @@ def _make_response(text: str) -> Dict[str, Any]:
 
 
 class TestExtractDSBenchAnswer:
+    def test_malformed_boxed_returns_none(self):
+        # `\boxed` present but not followed by a brace-balanced expression
+        # — falls through the start-with check and returns None.
+        assert extract_dsbench_answer("\\boxed42 (no brace)", DSBENCH_REGEX) is None
+
     def test_boxed_only(self):
         assert extract_dsbench_answer("therefore \\boxed{42}", DSBENCH_REGEX) == "42"
 
@@ -91,6 +98,21 @@ class TestExtractDSBenchAnswer:
 
     def test_unclosed_boxed_returns_none(self):
         assert extract_dsbench_answer("\\boxed{42 with no close", DSBENCH_REGEX) is None
+
+
+class TestMathEqual:
+    """Direct exercises of `_math_equal` paths that don't surface through relaxed_equal."""
+
+    def test_mcq_uppercase_match(self):
+        # MCQ early-return path inside _math_equal — relaxed_equal short-circuits
+        # case-insensitive MCQ before reaching here, so this is the only direct
+        # hit on the StringExtractionConfig branch.
+        assert _math_equal("A", "A") is True
+
+    def test_percentage_normalization(self):
+        # `_additional_normalization` strips a trailing percent sign before
+        # numeric comparison.
+        assert _math_equal("42", "42%") is True
 
 
 class TestRelaxedEqual:
@@ -207,6 +229,67 @@ class TestVerify:
         resp = await server.verify(body)
         assert resp.reward == 1.0
         assert resp.extracted_answer == "42"
+
+    @pytest.mark.asyncio
+    async def test_skips_non_message_output_items(self, server):
+        # A response with a `reasoning` item (and a `message` after it) — the
+        # combiner should silently skip the non-message item and still find
+        # the boxed answer in the assistant message.
+        from nemo_gym.openai_utils import (
+            NeMoGymResponse,
+            NeMoGymResponseOutputMessage,
+            NeMoGymResponseOutputText,
+            NeMoGymResponseReasoningItem,
+        )
+
+        response_dict = NeMoGymResponse(
+            id="r1",
+            created_at=1.0,
+            model="m",
+            object="response",
+            output=[
+                NeMoGymResponseReasoningItem(id="rs1", summary=[], type="reasoning"),
+                NeMoGymResponseOutputMessage(
+                    id="msg1",
+                    role="assistant",
+                    status="completed",
+                    type="message",
+                    content=[NeMoGymResponseOutputText(annotations=[], text="\\boxed{42}", type="output_text")],
+                ),
+            ],
+            parallel_tool_calls=False,
+            tool_choice="none",
+            tools=[],
+        ).model_dump()
+        body = DSBenchDAVerifyRequest.model_validate(
+            {
+                "responses_create_params": {"input": []},
+                "response": response_dict,
+                "expected_answer": "42",
+                "question": "x",
+            }
+        )
+        resp = await server.verify(body)
+        assert resp.reward == 1.0
+        assert resp.extracted_answer == "42"
+
+    @pytest.mark.asyncio
+    async def test_math_equal_and_relaxed_equal_exceptions_handled(self, server, monkeypatch):
+        # If `_math_equal` raises (e.g. internal math_verify hiccup), verify()
+        # logs a warning and treats it as False, then falls through to
+        # `relaxed_equal`. Note that `relaxed_equal` internally calls
+        # `_math_equal` for its scalar fallback, so monkeypatching `_math_equal`
+        # to raise also makes `relaxed_equal` raise on this row — exercising
+        # BOTH exception handlers in `verify()` simultaneously.
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated math_equal failure")
+
+        monkeypatch.setattr(dsbench_app, "_math_equal", boom)
+        body = self._make_request("\\boxed{42}", "42")
+        resp = await server.verify(body)
+        assert resp.reward == 0.0
+        assert resp.symbolic_correct is False  # math_equal raised → False
+        assert resp.relaxed_correct is False  # relaxed_equal also raised → False
 
 
 class TestMetrics:

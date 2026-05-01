@@ -1,0 +1,253 @@
+[
+  {
+    "agent_ref": {
+      "name": "dsbench_da_simple_agent"
+    },
+    "agent_metrics": {
+      "mean/reward": 0.8,
+      "mean/symbolic_correct": 0.8,
+      "mean/relaxed_correct": 0.0,
+      "mean/input_tokens": 42.2,
+      "mean/output_tokens": 209.6,
+      "mean/total_tokens": 251.8,
+      "max/reward": 1.0,
+      "max/symbolic_correct": 1.0,
+      "max/relaxed_correct": 0.0,
+      "max/input_tokens": 48.0,
+      "max/output_tokens": 508.0,
+      "max/total_tokens": 556.0,
+      "min/reward": 0.0,
+      "min/symbolic_correct": 0.0,
+      "min/relaxed_correct": 0.0,
+      "min/input_tokens": 37.0,
+      "min/output_tokens": 72.0,
+      "min/total_tokens": 110.0,
+      "median/reward": 1.0,
+      "median/symbolic_correct": 1.0,
+      "median/relaxed_correct": 0.0,
+      "median/input_tokens": 41.0,
+      "median/output_tokens": 101.0,
+      "median/total_tokens": 138.0,
+      "std/reward": 0.4472135954999579,
+      "std/symbolic_correct": 0.4472135954999579,
+      "std/relaxed_correct": 0.0,
+      "std/input_tokens": 5.06951674225463,
+      "std/output_tokens": 189.89813058584858,
+      "std/total_tokens": 194.4201635633506,
+      "pass@1/accuracy": 80.0,
+      "pass@1[avg-of-1]/accuracy": 80.0,
+      "majority@1/accuracy": 80.0,
+      "pass@1/no_answer": 0.0,
+      "pass@1[avg-of-1]/no_answer": 0.0,
+      "majority@1/no_answer": 0.0,
+      "per_sample_aggregate": {
+        "accuracy": [
+          80.0
+        ],
+        "no_answer": [
+          0.0
+        ]
+      }
+    },
+    "key_metrics": {
+      "mean/input_tokens": 42.2,
+      "mean/output_tokens": 209.6,
+      "pass@1[avg-of-1]/accuracy": 80.0,
+      "pass@1[avg-of-1]/no_answer": 0.0,
+      "pass@1/accuracy": 80.0,
+      "majority@1/accuracy": 80.0
+    },
+    "group_level_metrics": [
+      {
+        "mean/reward": 1.0,
+        "mean/symbolic_correct": 1.0,
+        "mean/relaxed_correct": 0.0,
+        "mean/input_tokens": 38.0,
+        "mean/output_tokens": 72.0,
+        "mean/total_tokens": 110.0,
+        "max/reward": 1.0,
+        "max/symbolic_correct": 1.0,
+        "max/relaxed_correct": 0.0,
+        "max/input_tokens": 38.0,
+        "max/output_tokens": 72.0,
+        "max/total_tokens": 110.0,
+        "min/reward": 1.0,
+        "min/symbolic_correct": 1.0,
+        "min/relaxed_correct": 0.0,
+        "min/input_tokens": 38.0,
+        "min/output_tokens": 72.0,
+        "min/total_tokens": 110.0,
+        "median/reward": 1.0,
+        "median/symbolic_correct": 1.0,
+        "median/relaxed_correct": 0.0,
+        "median/input_tokens": 38.0,
+        "median/output_tokens": 72.0,
+        "median/total_tokens": 110.0,
+        "std/reward": 0.0,
+        "std/symbolic_correct": 0.0,
+        "std/relaxed_correct": 0.0,
+        "std/input_tokens": 0.0,
+        "std/output_tokens": 0.0,
+        "std/total_tokens": 0.0,
+        "sample": {
+          "agent_ref": {
+            "name": "agent"
+          }
+        },
+        "_ng_task_index": 0
+      },
+      {
+        "mean/reward": 1.0,
+        "mean/symbolic_correct": 1.0,
+        "mean/relaxed_correct": 0.0,
+        "mean/input_tokens": 41.0,
+        "mean/output_tokens": 76.0,
+        "mean/total_tokens": 117.0,
+        "max/reward": 1.0,
+        "max/symbolic_correct": 1.0,
+        "max/relaxed_correct": 0.0,
+        "max/input_tokens": 41.0,
+        "max/output_tokens": 76.0,
+        "max/total_tokens": 117.0,
+        "min/reward": 1.0,
+        "min/symbolic_correct": 1.0,
+        "min/relaxed_correct": 0.0,
+        "min/input_tokens": 41.0,
+        "min/output_tokens": 76.0,
+        "min/total_tokens": 117.0,
+        "median/reward": 1.0,
+        "median/symbolic_correct": 1.0,
+        "median/relaxed_correct": 0.0,
+        "median/input_tokens": 41.0,
+        "median/output_tokens": 76.0,
+        "median/total_tokens": 117.0,
+        "std/reward": 0.0,
+        "std/symbolic_correct": 0.0,
+        "std/relaxed_correct": 0.0,
+        "std/input_tokens": 0.0,
+        "std/output_tokens": 0.0,
+        "std/total_tokens": 0.0,
+        "sample": {
+          "agent_ref": {
+            "name": "agent"
+          }
+        },
+        "_ng_task_index": 1
+      },
+      {
+        "mean/reward": 0.0,
+        "mean/symbolic_correct": 0.0,
+        "mean/relaxed_correct": 0.0,
+        "mean/input_tokens": 47.0,
+        "mean/output_tokens": 291.0,
+        "mean/total_tokens": 338.0,
+        "max/reward": 0.0,
+        "max/symbolic_correct": 0.0,
+        "max/relaxed_correct": 0.0,
+        "max/input_tokens": 47.0,
+        "max/output_tokens": 291.0,
+        "max/total_tokens": 338.0,
+        "min/reward": 0.0,
+        "min/symbolic_correct": 0.0,
+        "min/relaxed_correct": 0.0,
+        "min/input_tokens": 47.0,
+        "min/output_tokens": 291.0,
+        "min/total_tokens": 338.0,
+        "median/reward": 0.0,
+        "median/symbolic_correct": 0.0,
+        "median/relaxed_correct": 0.0,
+        "median/input_tokens": 47.0,
+        "median/output_tokens": 291.0,
+        "median/total_tokens": 338.0,
+        "std/reward": 0.0,
+        "std/symbolic_correct": 0.0,
+        "std/relaxed_correct": 0.0,
+        "std/input_tokens": 0.0,
+        "std/output_tokens": 0.0,
+        "std/total_tokens": 0.0,
+        "sample": {
+          "agent_ref": {
+            "name": "agent"
+          }
+        },
+        "_ng_task_index": 2
+      },
+      {
+        "mean/reward": 1.0,
+        "mean/symbolic_correct": 1.0,
+        "mean/relaxed_correct": 0.0,
+        "mean/input_tokens": 37.0,
+        "mean/output_tokens": 101.0,
+        "mean/total_tokens": 138.0,
+        "max/reward": 1.0,
+        "max/symbolic_correct": 1.0,
+        "max/relaxed_correct": 0.0,
+        "max/input_tokens": 37.0,
+        "max/output_tokens": 101.0,
+        "max/total_tokens": 138.0,
+        "min/reward": 1.0,
+        "min/symbolic_correct": 1.0,
+        "min/relaxed_correct": 0.0,
+        "min/input_tokens": 37.0,
+        "min/output_tokens": 101.0,
+        "min/total_tokens": 138.0,
+        "median/reward": 1.0,
+        "median/symbolic_correct": 1.0,
+        "median/relaxed_correct": 0.0,
+        "median/input_tokens": 37.0,
+        "median/output_tokens": 101.0,
+        "median/total_tokens": 138.0,
+        "std/reward": 0.0,
+        "std/symbolic_correct": 0.0,
+        "std/relaxed_correct": 0.0,
+        "std/input_tokens": 0.0,
+        "std/output_tokens": 0.0,
+        "std/total_tokens": 0.0,
+        "sample": {
+          "agent_ref": {
+            "name": "agent"
+          }
+        },
+        "_ng_task_index": 3
+      },
+      {
+        "mean/reward": 1.0,
+        "mean/symbolic_correct": 1.0,
+        "mean/relaxed_correct": 0.0,
+        "mean/input_tokens": 48.0,
+        "mean/output_tokens": 508.0,
+        "mean/total_tokens": 556.0,
+        "max/reward": 1.0,
+        "max/symbolic_correct": 1.0,
+        "max/relaxed_correct": 0.0,
+        "max/input_tokens": 48.0,
+        "max/output_tokens": 508.0,
+        "max/total_tokens": 556.0,
+        "min/reward": 1.0,
+        "min/symbolic_correct": 1.0,
+        "min/relaxed_correct": 0.0,
+        "min/input_tokens": 48.0,
+        "min/output_tokens": 508.0,
+        "min/total_tokens": 556.0,
+        "median/reward": 1.0,
+        "median/symbolic_correct": 1.0,
+        "median/relaxed_correct": 0.0,
+        "median/input_tokens": 48.0,
+        "median/output_tokens": 508.0,
+        "median/total_tokens": 556.0,
+        "std/reward": 0.0,
+        "std/symbolic_correct": 0.0,
+        "std/relaxed_correct": 0.0,
+        "std/input_tokens": 0.0,
+        "std/output_tokens": 0.0,
+        "std/total_tokens": 0.0,
+        "sample": {
+          "agent_ref": {
+            "name": "agent"
+          }
+        },
+        "_ng_task_index": 4
+      }
+    ]
+  }
+]

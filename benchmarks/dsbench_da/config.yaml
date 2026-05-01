@@ -2,17 +2,6 @@ config_paths:
   - resources_servers/ns_tools/configs/ns_tools.yaml
   - resources_servers/dsbench_da/configs/dsbench_da.yaml
 
-# Add the dsbench_da verifier to ns_tools' dispatcher. The chained
-# ns_tools.yaml's `verifiers` map already has math_with_judge — OmegaConf
-# merges the two on the same `ns_tools` instance.
-#
-# `default_verifier` cannot be overridden from this file: chained configs
-# load after the entry-point file, and ns_tools.yaml's
-# `default_verifier: math_with_judge` wins on merge order. Recipe scripts
-# (run_dsbench_da_gym.py) pass `++ns_tools.resources_servers.ns_tools.default_verifier=dsbench_da`
-# at the CLI to override. Each row in the prepared JSONL also carries
-# `verifier_type: dsbench_da` so per-sample dispatch is unambiguous even
-# if the default is left at math_with_judge.
 ns_tools:
   resources_servers:
     ns_tools:

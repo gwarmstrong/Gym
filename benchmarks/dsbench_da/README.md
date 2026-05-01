@@ -33,7 +33,8 @@ ng_run "+config_paths=[$config_paths]"
 
 # Collecting rollouts
 ng_collect_rollouts \
-    +agent_name=dsbench_da_simple_agent \
+    +agent_name=dsbench_da_benchmark_agent \
+    +prompt_config=benchmarks/dsbench_da/prompts/default.yaml \
     +input_jsonl_fpath=benchmarks/dsbench_da/data/dsbench_da_benchmark.jsonl \
     +output_jsonl_fpath=results/dsbench_da_rollouts.jsonl \
     +num_repeats=4

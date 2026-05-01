@@ -232,7 +232,16 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                 return responses_create_params.get(field)
             return getattr(responses_create_params, field, None)
 
-        completion_body: Dict[str, Any] = {"prompt": prompt_text}
+        completion_body: Dict[str, Any] = {
+            "prompt": prompt_text,
+            # apply_chat_template returns the prompt with the model's
+            # special chat tokens (<|im_start|>...) already in place.
+            # vLLM's /v1/completions default add_special_tokens=True
+            # would prepend BOS on top, shifting tokenization in a way
+            # that diverges from Skills' rollout pipeline (which sends
+            # the rendered text without an additional BOS).
+            "add_special_tokens": False,
+        }
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),

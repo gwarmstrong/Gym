@@ -179,6 +179,24 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             self._response_parser = _build_response_parser(self.config.model_handler)
         return self._response_parser
 
+    def _get_prompt_tokenizer(self):
+        # Skills' multi-turn flow applies the HF chat template **client
+        # side** with tools=tools and sends the rendered text to
+        # /v1/completions. Doing the chat-template render server-side via
+        # /v1/chat/completions diverges on tool-calls history serialization
+        # — fine for the single-turn AST family, but the multi-turn loop
+        # writes assistant messages with OpenAI-shape tool_calls and
+        # follow-up role:"tool" messages, and the round-trip into Qwen's
+        # <tool_call> blocks isn't bit-identical between server-side and
+        # client-side rendering. Mirror Skills exactly: render
+        # client-side, send /v1/completions.
+        if getattr(self, "_chat_tokenizer", None) is None:
+            from transformers import AutoTokenizer
+
+            hf_model_name = self.config.model_handler.replace("-FC", "")
+            self._chat_tokenizer = AutoTokenizer.from_pretrained(hf_model_name, trust_remote_code=True)
+        return self._chat_tokenizer
+
     async def _call_model(
         self,
         messages: List[Dict[str, Any]],
@@ -186,36 +204,40 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         responses_create_params: Dict[str, Any],
         cookies,
     ) -> Optional[Dict[str, Any]]:
-        # See bfcl_v4_ast_agent for why we use tool_choice="none" —
-        # BFCL parity requires raw-text vLLM output, and vLLM defaults
-        # to tool_choice="auto" when tools is set, which 400s without
-        # --enable-auto-tool-choice + --tool-call-parser flags.
-        chat_body: Dict[str, Any] = {"messages": messages}
-        if tools:
-            chat_body["tools"] = tools
-            chat_body["tool_choice"] = "none"
+        tokenizer = self._get_prompt_tokenizer()
+        try:
+            prompt_text = tokenizer.apply_chat_template(
+                messages,
+                tools=tools or None,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOG.error("apply_chat_template failed; messages=%r tools=%r: %s", messages, tools, exc)
+            raise
+
+        completion_body: Dict[str, Any] = {"prompt": prompt_text}
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),
-            ("max_output_tokens", "max_completion_tokens"),
+            ("max_output_tokens", "max_tokens"),
             ("stop", "stop"),
             ("seed", "seed"),
-            ("metadata", "metadata"),
         ]:
             if src in responses_create_params and responses_create_params[src] is not None:
-                chat_body[dst] = responses_create_params[src]
+                completion_body[dst] = responses_create_params[src]
         response = await self.server_client.post(
             server_name=self.config.model_server.name,
-            url_path="/v1/chat/completions",
-            json=chat_body,
+            url_path="/v1/completions",
+            json=completion_body,
             cookies=cookies,
         )
         if response.status >= 400:
             err_body = (await response.content.read()).decode("utf-8", "replace")
             LOG.error(
-                "vllm_model /v1/chat/completions returned %d. body sent (truncated 1KB): %s. response: %s",
+                "vllm_model /v1/completions returned %d. prompt (truncated 1KB): %s. response: %s",
                 response.status,
-                json.dumps(chat_body, default=str)[:1024],
+                prompt_text[:1024],
                 err_body[:2048],
             )
         try:
@@ -373,16 +395,20 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                     out_of_context = True
                     break
 
+                # /v1/completions: choices[0].text holds the generated text.
                 choice = model_response.get("choices", [{}])[0]
-                message = choice.get("message", {}) or {}
-                raw_content = _strip_reasoning(message.get("content", ""))
+                raw_text = choice.get("text", "") or ""
+                raw_content = _strip_reasoning(raw_text)
+                # Build a chat-completions-shaped wrapper so the existing
+                # parser (which adapts chat→text via _SyntheticResponse)
+                # still works.
                 synthetic = {
                     "choices": [
                         {
                             "message": {
                                 "role": "assistant",
                                 "content": raw_content,
-                                "tool_calls": message.get("tool_calls"),
+                                "tool_calls": None,
                             }
                         }
                     ]

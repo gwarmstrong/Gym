@@ -216,6 +216,22 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             LOG.error("apply_chat_template failed; messages=%r tools=%r: %s", messages, tools, exc)
             raise
 
+        # responses_create_params is a Pydantic model
+        # (NeMoGymResponseCreateParamsNonStreaming); Pydantic v2 BaseModel
+        # does NOT support `in`/`[]` lookups, so the AST-agent-style
+        # "src in responses_create_params" check silently returns False
+        # and we fall through to vLLM's defaults. For /v1/chat/completions
+        # the default max_completion_tokens is effectively unlimited, so
+        # AST didn't notice. /v1/completions defaults to max_tokens=16,
+        # which truncates every rollout to ~16 tokens and zeroes pass@1
+        # in multi_turn. Use attribute access (with a dict fallback so
+        # callers that pass a plain dict — e.g., the `or {}` on a missing
+        # field — still work).
+        def _get(field: str):
+            if isinstance(responses_create_params, dict):
+                return responses_create_params.get(field)
+            return getattr(responses_create_params, field, None)
+
         completion_body: Dict[str, Any] = {"prompt": prompt_text}
         for src, dst in [
             ("temperature", "temperature"),
@@ -224,8 +240,9 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             ("stop", "stop"),
             ("seed", "seed"),
         ]:
-            if src in responses_create_params and responses_create_params[src] is not None:
-                completion_body[dst] = responses_create_params[src]
+            val = _get(src)
+            if val is not None:
+                completion_body[dst] = val
         response = await self.server_client.post(
             server_name=self.config.model_server.name,
             url_path="/v1/completions",

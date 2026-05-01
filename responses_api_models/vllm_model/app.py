@@ -102,20 +102,6 @@ class VLLMModel(SimpleResponsesAPIModel):
             return_token_id_information=self.config.return_token_id_information,
         )
 
-    def setup_webserver(self):
-        # Add /v1/completions to the routes registered by the base class.
-        # Used by callers that pre-render the chat template client-side
-        # (e.g., BFCL's per-model FC handler) and need vLLM to tokenize a
-        # raw prompt verbatim instead of running apply_chat_template
-        # server-side. The two paths converge byte-for-byte for
-        # single-turn flows; multi-turn flows with tool_calls history can
-        # diverge subtly enough to depress eval scores noticeably (the
-        # bfcl_v4 multi_turn migration hit ~−15pp before this route was
-        # available).
-        app = super().setup_webserver()
-        app.post("/v1/completions")(self.completions)
-        return app
-
     def model_post_init(self, context):
         self._post_init()
         return super().model_post_init(context)
@@ -321,42 +307,6 @@ class VLLMModel(SimpleResponsesAPIModel):
             body_dict = extra_body | body_dict
 
         return body_dict
-
-    async def completions(self, request: Request, body: dict = Body()) -> dict:
-        """Pass-through proxy for vLLM's `/v1/completions` (text-completions
-        endpoint). The body and response are passed through unchanged
-        (apart from the standard reasoning-parser unwrap done by upstream
-        vLLM if the server was started with `--reasoning-parser`).
-        Sequential-reasoning, return_token_id_information, and other
-        chat-completions-specific post-processing are intentionally not
-        applied — `/v1/completions` is for callers that have already
-        rendered the prompt and want vLLM to tokenize it verbatim.
-        """
-        body = dict(body)
-        body.setdefault("model", self.config.model)
-        if self.config.extra_body:
-            body = {**self.config.extra_body, **body}
-
-        client = self._resolve_client(request)
-        try:
-            return await client.create_completion(**body)
-        except ClientResponseError as e:
-            result_content_str = e.response_content.decode()
-            is_out_of_context_length = e.status == 400 and (
-                "context length" in result_content_str or "max_tokens" in result_content_str
-            )
-            if is_out_of_context_length:
-                # Mirror chat_completions' length-finish behavior with a
-                # minimal text-completions-shape response.
-                return {
-                    "id": f"cmpl-{uuid4().hex}",
-                    "object": "text_completion",
-                    "created": int(time()),
-                    "model": body["model"],
-                    "choices": [{"index": 0, "text": "", "finish_reason": "length", "logprobs": None}],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                }
-            raise
 
     async def chat_completions(
         self, request: Request, body: NeMoGymChatCompletionCreateParamsNonStreaming = Body()

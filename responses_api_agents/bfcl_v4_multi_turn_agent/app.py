@@ -179,109 +179,52 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             self._response_parser = _build_response_parser(self.config.model_handler)
         return self._response_parser
 
-    def _get_prompt_tokenizer(self):
-        # Skills' multi-turn flow applies the HF chat template **client
-        # side** with tools=tools and sends the rendered text to
-        # /v1/completions. Doing the chat-template render server-side via
-        # /v1/chat/completions diverges on tool-calls history serialization
-        # — fine for the single-turn AST family, but the multi-turn loop
-        # writes assistant messages with OpenAI-shape tool_calls and
-        # follow-up role:"tool" messages, and the round-trip into Qwen's
-        # <tool_call> blocks isn't bit-identical between server-side and
-        # client-side rendering. Mirror Skills exactly: render
-        # client-side, send /v1/completions.
-        if getattr(self, "_chat_tokenizer", None) is None:
-            from transformers import AutoTokenizer
-
-            hf_model_name = self.config.model_handler.replace("-FC", "")
-            self._chat_tokenizer = AutoTokenizer.from_pretrained(hf_model_name, trust_remote_code=True)
-        return self._chat_tokenizer
-
     async def _call_model(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]],
-        responses_create_params: Dict[str, Any],
+        responses_create_params: Any,
         cookies,
     ) -> Optional[Dict[str, Any]]:
-        tokenizer = self._get_prompt_tokenizer()
-        try:
-            prompt_text = tokenizer.apply_chat_template(
-                messages,
-                tools=tools or None,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOG.error("apply_chat_template failed; messages=%r tools=%r: %s", messages, tools, exc)
-            raise
-
-        # responses_create_params is a Pydantic model
-        # (NeMoGymResponseCreateParamsNonStreaming); Pydantic v2 BaseModel
-        # does NOT support `in`/`[]` lookups, so the AST-agent-style
-        # "src in responses_create_params" check silently returns False
-        # and we fall through to vLLM's defaults. For /v1/chat/completions
-        # the default max_completion_tokens is effectively unlimited, so
-        # AST didn't notice. /v1/completions defaults to max_tokens=16,
-        # which truncates every rollout to ~16 tokens and zeroes pass@1
-        # in multi_turn. Use attribute access (with a dict fallback so
-        # callers that pass a plain dict — e.g., the `or {}` on a missing
-        # field — still work).
+        # responses_create_params is a Pydantic v2 model
+        # (NeMoGymResponseCreateParamsNonStreaming); v2 BaseModel does NOT
+        # support `in`/`[]` lookups, so the prior dict-style code silently
+        # fell through to vLLM defaults for every override. Use attribute
+        # access with a dict fallback (callers that pass `or {}` for a
+        # missing field still work).
         def _get(field: str):
             if isinstance(responses_create_params, dict):
                 return responses_create_params.get(field)
             return getattr(responses_create_params, field, None)
 
-        completion_body: Dict[str, Any] = {
-            "prompt": prompt_text,
-            # apply_chat_template returns the prompt with the model's
-            # special chat tokens (<|im_start|>...) already in place.
-            # vLLM's /v1/completions default add_special_tokens=True
-            # would prepend BOS on top, shifting tokenization in a way
-            # that diverges from Skills' rollout pipeline (which sends
-            # the rendered text without an additional BOS).
-            "add_special_tokens": False,
-            # vLLM defaults skip_special_tokens=True, which strips
-            # <tool_call>/</tool_call> tokens from the decoded output —
-            # the QwenFCHandler regex-extracts those exact tokens to
-            # rebuild structured tool calls. Mirror Skills' vllm.py
-            # builder which sets skip_special_tokens=False.
-            "skip_special_tokens": False,
-            # generation_config.json on Qwen3-* declares top_k=20 which
-            # vLLM applies when no explicit top_k is sent (logged as
-            # "Default vLLM sampling parameters have been overridden by
-            # the model's generation_config.json"). Skills' vllm.py
-            # builder sends top_k=-1 by default, disabling the filter.
-            # The mismatch is a sampling divergence vs Skills.
-            "top_k": -1,
-            # spaces_between_special_tokens=True would inject spaces
-            # around <|im_end|> / <tool_call> etc when decoding —
-            # subtle output divergence vs Skills (which sends
-            # spaces_between_special_tokens: False via extra_body).
-            "extra_body": {"spaces_between_special_tokens": False},
-        }
+        # See bfcl_v4_ast_agent for why we use tool_choice="none".
+        chat_body: Dict[str, Any] = {"messages": messages}
+        if tools:
+            chat_body["tools"] = tools
+            chat_body["tool_choice"] = "none"
         for src, dst in [
             ("temperature", "temperature"),
             ("top_p", "top_p"),
-            ("max_output_tokens", "max_tokens"),
+            ("max_output_tokens", "max_completion_tokens"),
             ("stop", "stop"),
             ("seed", "seed"),
+            ("metadata", "metadata"),
         ]:
             val = _get(src)
             if val is not None:
-                completion_body[dst] = val
+                chat_body[dst] = val
         response = await self.server_client.post(
             server_name=self.config.model_server.name,
-            url_path="/v1/completions",
-            json=completion_body,
+            url_path="/v1/chat/completions",
+            json=chat_body,
             cookies=cookies,
         )
         if response.status >= 400:
             err_body = (await response.content.read()).decode("utf-8", "replace")
             LOG.error(
-                "vllm_model /v1/completions returned %d. prompt (truncated 1KB): %s. response: %s",
+                "vllm_model /v1/chat/completions returned %d. body sent (truncated 1KB): %s. response: %s",
                 response.status,
-                prompt_text[:1024],
+                json.dumps(chat_body, default=str)[:1024],
                 err_body[:2048],
             )
         try:
@@ -439,20 +382,16 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                     out_of_context = True
                     break
 
-                # /v1/completions: choices[0].text holds the generated text.
                 choice = model_response.get("choices", [{}])[0]
-                raw_text = choice.get("text", "") or ""
-                raw_content = _strip_reasoning(raw_text)
-                # Build a chat-completions-shaped wrapper so the existing
-                # parser (which adapts chat→text via _SyntheticResponse)
-                # still works.
+                message = choice.get("message", {}) or {}
+                raw_content = _strip_reasoning(message.get("content", ""))
                 synthetic = {
                     "choices": [
                         {
                             "message": {
                                 "role": "assistant",
                                 "content": raw_content,
-                                "tool_calls": None,
+                                "tool_calls": message.get("tool_calls"),
                             }
                         }
                     ]

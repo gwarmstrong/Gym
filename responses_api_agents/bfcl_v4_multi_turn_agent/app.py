@@ -26,6 +26,7 @@ order, and the agent's run() does prereq accounting via the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -163,6 +164,17 @@ def _build_response_parser(model_handler_key: str):
 class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
     config: BfclV4MultiTurnAgentConfig
     _response_parser = None
+    # Per-(seed, scenario) async lock for memory rollouts. BFCL's MemoryAPI
+    # flushes whole-state snapshots to a single
+    # <model_result_dir>/agentic/memory/<backend>/memory_snapshot/<scenario>_final.json
+    # file. When multiple rollouts of the same scenario run concurrently
+    # they overwrite each other's flush and prereq state is lost. Skills
+    # avoids this by running prereqs sequentially in load_data; we don't
+    # have a load_data hook through the Gym rollout client, so serialize
+    # per-(seed, scenario) here. Across (seed, scenario) tuples, the
+    # filesystem paths are independent so they can run in parallel.
+    _memory_locks: Dict[tuple, asyncio.Lock] = {}
+    _memory_locks_mutex: Optional[asyncio.Lock] = None
 
     def model_post_init(self, __context) -> None:
         # Re-install bfcl_eval after the rollout client's `uv sync`
@@ -173,6 +185,12 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
 
         ensure_bfcl_eval_installed()
         super().model_post_init(__context)
+
+    @classmethod
+    def _get_memory_lock(cls, key: tuple) -> asyncio.Lock:
+        if key not in cls._memory_locks:
+            cls._memory_locks[key] = asyncio.Lock()
+        return cls._memory_locks[key]
 
     def _get_parser(self):
         if self._response_parser is None:
@@ -262,15 +280,55 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         request: Request,
         body: BfclV4MultiTurnAgentRunRequest,
     ) -> BfclV4MultiTurnAgentVerifyResponse:
+        # For memory rollouts, acquire a per-(seed, scenario) lock so the
+        # whole-state snapshot in customer_final.json (or finance_final,
+        # etc.) doesn't get clobbered by concurrent rollouts of the same
+        # scenario within the same seed. See _memory_locks docstring.
+        meta = body.verifier_metadata or {}
+        category = meta.get("test_category", "")
+        if _is_memory(category):
+            scenario = meta.get("scenario", "")
+            rollout_index = self._extract_rollout_index(body)
+            lock = self._get_memory_lock((rollout_index, scenario))
+            async with lock:
+                try:
+                    return await self._run_inner(request, body)
+                except Exception:
+                    LOG.exception(
+                        "bfcl_v4_multi_turn_agent.run() failed for id=%s test_category=%s",
+                        meta.get("id", ""),
+                        category,
+                    )
+                    raise
         try:
             return await self._run_inner(request, body)
         except Exception:
             LOG.exception(
                 "bfcl_v4_multi_turn_agent.run() failed for id=%s test_category=%s",
-                (body.verifier_metadata or {}).get("id", ""),
-                (body.verifier_metadata or {}).get("test_category", ""),
+                meta.get("id", ""),
+                category,
             )
             raise
+
+    @staticmethod
+    def _extract_rollout_index(body) -> int:
+        try:
+            rcp = body.responses_create_params
+            md = getattr(rcp, "metadata", None) if rcp is not None else None
+            if md is None:
+                return 0
+            eb_raw = md.get("extra_body") if isinstance(md, dict) else getattr(md, "extra_body", None)
+            if isinstance(eb_raw, str):
+                eb = json.loads(eb_raw)
+            elif isinstance(eb_raw, dict):
+                eb = eb_raw
+            else:
+                eb = {}
+            if isinstance(eb.get("seed"), int):
+                return eb["seed"]
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
 
     async def _run_inner(
         self,
@@ -296,22 +354,7 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         # task share one stateful instance via globals(), and seed-1
         # inherits seed-0's leftover filesystem state. Skills doesn't hit
         # this because it runs each seed in a separate process.
-        rollout_index = 0
-        try:
-            rcp = body.responses_create_params
-            md = getattr(rcp, "metadata", None) if rcp is not None else None
-            if md is not None:
-                eb_raw = md.get("extra_body") if isinstance(md, dict) else getattr(md, "extra_body", None)
-                if isinstance(eb_raw, str):
-                    eb = json.loads(eb_raw)
-                elif isinstance(eb_raw, dict):
-                    eb = eb_raw
-                else:
-                    eb = {}
-                if isinstance(eb.get("seed"), int):
-                    rollout_index = eb["seed"]
-        except Exception:  # noqa: BLE001
-            rollout_index = 0
+        rollout_index = self._extract_rollout_index(body)
 
         # memory_vector imports SentenceTransformer("all-MiniLM-L6-v2") at
         # module load time, which hits HF Hub. With HF_HUB_OFFLINE=1 (set

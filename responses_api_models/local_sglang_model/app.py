@@ -211,10 +211,14 @@ class LocalSGLangModel(SGLangModel):
         return cli_args, env_vars, port, num_gpus
 
     def _reserve_placement_group(self, num_gpus: int) -> PlacementGroup:
-        bundles = [{"GPU": 1.0}] * num_gpus + [{"CPU": 1.0}]
+        # Single fat bundle so the actor's {GPU: num_gpus, CPU: 1} request
+        # fits without crossing bundles. Ray rejects placement groups where
+        # the actor resource request can't be satisfied by a single bundle,
+        # even with STRICT_PACK across the group.
+        bundles = [{"GPU": float(num_gpus), "CPU": 1.0}]
         pg = ray.util.placement_group(
             name=f"{self.config.name}_dp_rank_0",
-            strategy="STRICT_PACK",  # single-node single-instance
+            strategy="STRICT_PACK",
             bundles=bundles,
         )
         ray.get(pg.ready())

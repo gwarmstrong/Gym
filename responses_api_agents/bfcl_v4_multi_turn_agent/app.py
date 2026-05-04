@@ -30,7 +30,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from fastapi import Body, Request
 from pydantic import ConfigDict, Field
@@ -173,8 +173,10 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
     # have a load_data hook through the Gym rollout client, so serialize
     # per-(seed, scenario) here. Across (seed, scenario) tuples, the
     # filesystem paths are independent so they can run in parallel.
-    _memory_locks: Dict[tuple, asyncio.Lock] = {}
-    _memory_locks_mutex: Optional[asyncio.Lock] = None
+    # ClassVar so Pydantic v2 doesn't treat these as model fields (which
+    # would make the bare class-attribute access return a
+    # ModelPrivateAttr descriptor instead of the dict).
+    _memory_locks: ClassVar[Dict[tuple, asyncio.Lock]] = {}
 
     def model_post_init(self, __context) -> None:
         # Re-install bfcl_eval after the rollout client's `uv sync`

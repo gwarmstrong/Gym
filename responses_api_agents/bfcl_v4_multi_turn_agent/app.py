@@ -340,6 +340,23 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             await raise_for_status(verify_response)
             return BfclV4MultiTurnAgentVerifyResponse.model_validate(await get_response_json(verify_response))
 
+        # Memory category: rewrite `initial_config[MemoryAPI_*]["model_result_dir"]`
+        # before materializing the instance. The path baked in during
+        # prepare.py points at the temp dir bfcl_eval was cloned into
+        # (e.g. /tmp/tmp4cygoma_/.../bfcl_eval/data) which doesn't exist
+        # on the cluster — MemoryAPI._flush_memory_to_local_file then
+        # silently fails to persist prereq state, and every scored
+        # rollout starts with an empty memory. Skills' BFCLGenerationTask.load_data
+        # does the equivalent rewrite (with our Path.parent fix). Use a
+        # stable per-seed dir so prereq rollouts and the scored rollout
+        # share state, but seeds don't race each other.
+        if _is_memory(test_category):
+            memory_state_dir = f"/tmp/bfcl_v4_memory_state_seed{rollout_index}"
+            initial_config = {
+                k: ({**v, "model_result_dir": memory_state_dir} if k.startswith("MemoryAPI") else v)
+                for k, v in initial_config.items()
+            }
+
         # Memory category: inject memory instruction system prompt now that
         # the memory instance state is known. Skills runs an empty
         # execute_multi_turn_func_call to materialize the instance, then

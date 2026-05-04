@@ -34,7 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 from time import sleep
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import ray
 import requests
@@ -162,7 +162,9 @@ class LocalSGLangModelActor:
 class LocalSGLangModel(SGLangModel):
     config: LocalSGLangModelConfig
 
-    _local_sglang_model_actor: ClassVar[Any] = None
+    # Mirrors local_vllm_model's declaration: leading-underscore attribute,
+    # which Pydantic v2 treats as a PrivateAttr settable on instances.
+    _local_sglang_model_actor: Any
 
     def setup_webserver(self):
         print("Starting SGLang server. This will take a few minutes...")

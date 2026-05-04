@@ -566,6 +566,20 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             if force_quit or out_of_context:
                 break
 
+        # Memory prereq rollouts must flush their MemoryAPI instance state
+        # to <model_result_dir>/agentic/memory/<backend>/memory_snapshot/<scenario>_final.json
+        # so that subsequent scored rollouts can read the populated state.
+        # BFCL's own base_handler.py does this in two places (lines 376
+        # and 667 of bfcl_eval/model_handler/base_handler.py); since our
+        # agent doesn't use base_handler, we have to call it explicitly.
+        # Without this, scored memory rollouts always start with empty
+        # memory and the model can't answer questions about prior turns.
+        if _is_memory(test_category) and "_prereq_" in row_id:
+            try:
+                memory_instance._flush_memory_to_local_file()
+            except Exception:  # noqa: BLE001
+                LOG.exception("memory flush failed for prereq id=%s", row_id)
+
         verify_request = BfclV4MultiTurnAgentVerifyRequest(
             responses_create_params=body.responses_create_params,
             response={"output_text": json.dumps(all_model_response)},

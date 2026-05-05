@@ -93,12 +93,13 @@ def _make_config(**overrides) -> LocalSGLangModelConfig:
         return_token_id_information=False,
         uses_reasoning_parser=False,
         sglang_serve_kwargs={"tp_size": 1, "pp_size": 1, "dp_size": 1},
+        sglang_serve_env_vars={},
     )
     cfg_kwargs.update(overrides)
     return LocalSGLangModelConfig(**cfg_kwargs)
 
 
-class TestBuildCliAndEnv:
+class TestConfigureSGLangServe:
     @patch("responses_api_models.local_sglang_model.app.find_open_port", return_value=30000)
     @patch(
         "responses_api_models.local_sglang_model.app.get_global_config_dict",
@@ -116,7 +117,7 @@ class TestBuildCliAndEnv:
             sglang_serve_env_vars={"SGLANG_FOO": "1"},
         )
         model = LocalSGLangModel(config=config, server_client=MagicMock(spec=ServerClient))
-        cli_args, env_vars, port, num_gpus = model._build_cli_and_env()
+        cli_args, env_vars, port, num_gpus = model._configure_sglang_serve()
 
         assert port == 30000
         assert num_gpus == 1
@@ -141,7 +142,7 @@ class TestBuildCliAndEnv:
             sglang_serve_kwargs={"tp_size": 4, "pp_size": 2, "dp_size": 1},
         )
         model = LocalSGLangModel(config=config, server_client=MagicMock(spec=ServerClient))
-        _, _, _, num_gpus = model._build_cli_and_env()
+        _, _, _, num_gpus = model._configure_sglang_serve()
         assert num_gpus == 8
 
     @patch("responses_api_models.local_sglang_model.app.find_open_port", return_value=30000)
@@ -154,7 +155,7 @@ class TestBuildCliAndEnv:
         config = _make_config(sglang_serve_kwargs={"tp_size": 1, "pp_size": 1, "dp_size": 2})
         model = LocalSGLangModel(config=config, server_client=MagicMock(spec=ServerClient))
         with pytest.raises(NotImplementedError, match="dp_size=1 only"):
-            model._build_cli_and_env()
+            model._configure_sglang_serve()
 
 
 class TestUnsupportedConfigsRaiseEarly:

@@ -12,29 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""LocalSGLangModel — spin up an SGLang OpenAI-compatible server inside the
-Gym head process via a Ray actor and route the ``SGLangModel`` adapter at it.
-
-Compared to ``local_vllm_model``, the launcher is intentionally simpler:
-
-* Subprocess launch (``python -m sglang.launch_server``) — SGLang already runs
-  its scheduler / tokenizer workers as subprocesses, so isolating the launcher
-  itself avoids the signal-handler, uvicorn-logger and DP-placement-group
-  monkeypatches that ``local_vllm_model`` carries.
-* Standard Ray GPU accounting: the actor requests ``num_gpus = tp_size * pp_size``,
-  Ray sets ``CUDA_VISIBLE_DEVICES`` and the subprocess inherits it.
-
-Single-instance, single-node only in this first cut. Multi-instance / multi-node
-SGLang DP needs a placement-group strategy similar to ``local_vllm_model`` and
-is deferred.
-"""
-
 import os
 import subprocess
 import sys
 from pathlib import Path
 from time import sleep
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import ray
 import requests
@@ -49,7 +32,6 @@ from nemo_gym.global_config import (
     get_global_config_dict,
     get_hf_token,
 )
-from nemo_gym.server_utils import is_nemo_gym_fastapi_entrypoint
 from responses_api_models.sglang_model.app import SGLangModel, SGLangModelConfig
 
 
@@ -63,7 +45,7 @@ class LocalSGLangModelConfig(SGLangModelConfig):
 
     hf_home: Optional[str] = None
     sglang_serve_kwargs: Dict[str, Any]
-    sglang_serve_env_vars: Dict[str, str] = Field(default_factory=dict)
+    sglang_serve_env_vars: Dict[str, str]
 
     ray_worker_py_executable: str = sys.executable
 
@@ -162,9 +144,7 @@ class LocalSGLangModelActor:
 class LocalSGLangModel(SGLangModel):
     config: LocalSGLangModelConfig
 
-    # Mirrors local_vllm_model's declaration: leading-underscore attribute,
-    # which Pydantic v2 treats as a PrivateAttr settable on instances.
-    _local_sglang_model_actor: Any
+    _local_sglang_model_actor: LocalSGLangModelActor
 
     def setup_webserver(self):
         print("Starting SGLang server. This will take a few minutes...")
@@ -175,7 +155,7 @@ class LocalSGLangModel(SGLangModel):
         # HF cache layout: HF_HOME/hub/...
         return str(Path(self.config.hf_home) / "hub")
 
-    def _build_cli_and_env(self) -> tuple[List[str], Dict[str, str], int, int]:
+    def _configure_sglang_serve(self) -> Tuple[List[str], Dict[str, str], int, int]:
         kwargs = dict(self.config.sglang_serve_kwargs)
 
         tp_size = _extract_required_size(kwargs, "tp_size", default=1)
@@ -227,7 +207,7 @@ class LocalSGLangModel(SGLangModel):
         return pg
 
     def start_sglang_server(self) -> None:
-        cli_args, env_vars, port, num_gpus = self._build_cli_and_env()
+        cli_args, env_vars, port, num_gpus = self._configure_sglang_serve()
 
         if self.config.debug:
             print(f"Final SGLang CLI args: {cli_args}")
@@ -274,5 +254,3 @@ class LocalSGLangModel(SGLangModel):
 
 if __name__ == "__main__":
     LocalSGLangModel.run_webserver()
-elif is_nemo_gym_fastapi_entrypoint(__file__):
-    app = LocalSGLangModel.run_webserver()  # noqa: F401

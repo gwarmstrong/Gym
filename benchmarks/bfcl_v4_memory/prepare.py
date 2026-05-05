@@ -133,6 +133,13 @@ def _to_gym_row(entry: dict, category: str) -> dict:
             "tools": entry.get("tools", []),
             "initial_config": entry.get("initial_config", {}),
             "involved_classes": entry.get("involved_classes", []),
+            # `depends_on` is BFCL's per-row list of prereq ids that must
+            # populate memory state before the scored row runs. The agent
+            # needs this to await prereq completion at runtime; without
+            # it the async rollout client will fire scored rollouts
+            # before their prereqs land their _flush_memory_to_local_file()
+            # output.
+            "depends_on": entry.get("depends_on", []),
         },
     }
 

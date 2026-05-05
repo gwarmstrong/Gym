@@ -177,6 +177,15 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
     # would make the bare class-attribute access return a
     # ModelPrivateAttr descriptor instead of the dict).
     _memory_locks: ClassVar[Dict[tuple, asyncio.Lock]] = {}
+    # Per-(seed, prereq_id) async event signalling that the prereq has
+    # finished flushing its MemoryAPI state to disk. Scored memory
+    # rollouts wait on the events for all ids listed in their
+    # `depends_on` field before starting, so they don't read an empty
+    # snapshot file. Skills enforces this serialization in load_data
+    # (sync for-loop over prereqs before returning non_prereqs); we do
+    # it via async events because our rollout client doesn't have a
+    # load_data hook.
+    _prereq_done_events: ClassVar[Dict[tuple, asyncio.Event]] = {}
 
     def model_post_init(self, __context) -> None:
         # Re-install bfcl_eval after the rollout client's `uv sync`
@@ -193,6 +202,13 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         if key not in cls._memory_locks:
             cls._memory_locks[key] = asyncio.Lock()
         return cls._memory_locks[key]
+
+    @classmethod
+    def _get_prereq_event(cls, seed: int, prereq_id: str) -> asyncio.Event:
+        key = (seed, prereq_id)
+        if key not in cls._prereq_done_events:
+            cls._prereq_done_events[key] = asyncio.Event()
+        return cls._prereq_done_events[key]
 
     def _get_parser(self):
         if self._response_parser is None:
@@ -291,6 +307,18 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
         if _is_memory(category):
             scenario = meta.get("scenario", "")
             rollout_index = self._extract_rollout_index(body)
+            row_id = meta.get("id", "")
+            # Scored memory rollouts depend on multiple prereqs having
+            # already flushed their MemoryAPI state to disk. Wait on each
+            # listed prereq's done-event before acquiring the lock — if
+            # we waited inside the lock the prereqs would never get a
+            # chance to run (they need the same lock to flush). Skills'
+            # load_data does the equivalent serialization synchronously
+            # before returning non_prereqs to the main pipeline.
+            if "_prereq_" not in row_id:
+                depends_on = meta.get("depends_on") or []
+                for prereq_id in depends_on:
+                    await self._get_prereq_event(rollout_index, prereq_id).wait()
             lock = self._get_memory_lock((rollout_index, scenario))
             async with lock:
                 try:
@@ -579,6 +607,8 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
                 memory_instance._flush_memory_to_local_file()
             except Exception:  # noqa: BLE001
                 LOG.exception("memory flush failed for prereq id=%s", row_id)
+            # Signal scored rollouts that depend on this prereq.
+            self._get_prereq_event(rollout_index, row_id).set()
 
         verify_request = BfclV4MultiTurnAgentVerifyRequest(
             responses_create_params=body.responses_create_params,

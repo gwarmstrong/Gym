@@ -320,7 +320,24 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             # lock before prereq_22 ran.
             depends_on = meta.get("depends_on") or []
             for prereq_id in depends_on:
-                await self._get_prereq_event(rollout_index, prereq_id).wait()
+                event = self._get_prereq_event(rollout_index, prereq_id)
+                # 5-minute timeout: prereqs typically take 2-3 min each.
+                # Without a bound, +limit subsets that exclude required
+                # prereqs would deadlock the rollout indefinitely.
+                # Falling through with an empty memory snapshot
+                # degrades to the pre-fix behavior (BFCL prints a
+                # warning) — undesirable in full runs but lets probes
+                # complete.
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    LOG.warning(
+                        "memory rollout id=%s timed out waiting for prereq %s — "
+                        "proceeding with empty/partial state",
+                        row_id,
+                        prereq_id,
+                    )
+                    break
             lock = self._get_memory_lock((rollout_index, scenario))
             async with lock:
                 try:

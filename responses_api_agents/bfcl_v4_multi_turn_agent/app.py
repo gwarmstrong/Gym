@@ -308,17 +308,19 @@ class BfclV4MultiTurnAgent(SimpleResponsesAPIAgent):
             scenario = meta.get("scenario", "")
             rollout_index = self._extract_rollout_index(body)
             row_id = meta.get("id", "")
-            # Scored memory rollouts depend on multiple prereqs having
-            # already flushed their MemoryAPI state to disk. Wait on each
-            # listed prereq's done-event before acquiring the lock — if
-            # we waited inside the lock the prereqs would never get a
-            # chance to run (they need the same lock to flush). Skills'
-            # load_data does the equivalent serialization synchronously
-            # before returning non_prereqs to the main pipeline.
-            if "_prereq_" not in row_id:
-                depends_on = meta.get("depends_on") or []
-                for prereq_id in depends_on:
-                    await self._get_prereq_event(rollout_index, prereq_id).wait()
+            # Memory rollouts (both prereq AND scored) wait on
+            # depends_on prereq events before acquiring the per-(seed,
+            # scenario) lock — prereq-chain dependencies (prereq_N waits
+            # for prereq_N-1) AND scored dependencies (scored waits for
+            # all prereqs in scenario). Wait *outside* the lock — the
+            # depended-on prereqs need the same lock to flush, so
+            # waiting inside would deadlock. The per-(seed, scenario)
+            # lock alone provides mutual exclusion but no FIFO ordering
+            # of unrelated waiters, so we'd see e.g. prereq_23 hold the
+            # lock before prereq_22 ran.
+            depends_on = meta.get("depends_on") or []
+            for prereq_id in depends_on:
+                await self._get_prereq_event(rollout_index, prereq_id).wait()
             lock = self._get_memory_lock((rollout_index, scenario))
             async with lock:
                 try:

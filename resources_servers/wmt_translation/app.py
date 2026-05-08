@@ -184,28 +184,49 @@ def _build_comet_actor_class():
         )
     uv_python_root = venv_python.parent.parent
 
-    # Default cache root assumes the canonical container mount at /opt/Gym
-    # (cluster deployments). For local dev or non-standard mounts, override
-    # via the WMT_TRANSLATION_COMET_PY_CACHE env var to any user-writable
-    # path; on multi-node clusters the override must point at a shared
-    # filesystem path so cross-node Ray actors find the mirror.
-    cache_root = Path(os.environ.get("WMT_TRANSLATION_COMET_PY_CACHE", "/opt/Gym/.cache/comet-python"))
-    mirrored_python_root = cache_root / uv_python_root.name
-    mirrored_python_bin = mirrored_python_root / "bin" / venv_python.name
-    if not mirrored_python_bin.exists():
+    # Skip the mirror when the resolved python is the *system* interpreter
+    # (e.g. /usr/bin/python3.12 baked into a docker image). Every node spins
+    # up the same image so the system python is already cross-node accessible
+    # — copying /usr to a cache_root would be wasteful (and actually break,
+    # since /usr contains thousands of unrelated files). The uv_python_root
+    # naming heuristic ("cpython-X.Y.Z-…") matches uv's relocatable
+    # python-build-standalone install dirs without false-positiving on
+    # /usr or /opt/python or similar system locations.
+    is_uv_managed_python = uv_python_root.name.startswith("cpython-")
+    if is_uv_managed_python:
+        # Default cache root assumes the canonical container mount at /opt/Gym
+        # (cluster deployments). For local dev or non-standard mounts, override
+        # via the WMT_TRANSLATION_COMET_PY_CACHE env var to any user-writable
+        # path; on multi-node clusters the override must point at a shared
+        # filesystem path so cross-node Ray actors find the mirror.
+        cache_root = Path(os.environ.get("WMT_TRANSLATION_COMET_PY_CACHE", "/opt/Gym/.cache/comet-python"))
+        mirrored_python_root = cache_root / uv_python_root.name
+        mirrored_python_bin = mirrored_python_root / "bin" / venv_python.name
+        if not mirrored_python_bin.exists():
+            LOG.info(
+                "Mirroring uv Python install %s -> %s for cross-node Ray tasks",
+                uv_python_root,
+                mirrored_python_root,
+            )
+            mirrored_python_root.parent.mkdir(parents=True, exist_ok=True)
+            # copytree refuses to overwrite, so use a two-stage atomic rename
+            # via a .tmp dir to avoid half-populated caches if interrupted.
+            tmp = mirrored_python_root.with_suffix(".tmp")
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            shutil.copytree(uv_python_root, tmp, symlinks=True)
+            tmp.rename(mirrored_python_root)
+    else:
+        # System python path — use the venv wrapper directly. The venv lives
+        # on the shared filesystem (/lustre mount) and the system python it
+        # symlinks to exists at the same path on every node (same docker
+        # image). No copy needed.
+        mirrored_python_bin = Path(sys.executable)
         LOG.info(
-            "Mirroring uv Python install %s -> %s for cross-node Ray tasks",
-            uv_python_root,
-            mirrored_python_root,
+            "Skipping uv-python mirror (system python at %s); using venv wrapper %s",
+            venv_python,
+            mirrored_python_bin,
         )
-        mirrored_python_root.parent.mkdir(parents=True, exist_ok=True)
-        # copytree refuses to overwrite, so use a two-stage atomic rename
-        # via a .tmp dir to avoid half-populated caches if interrupted.
-        tmp = mirrored_python_root.with_suffix(".tmp")
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        shutil.copytree(uv_python_root, tmp, symlinks=True)
-        tmp.rename(mirrored_python_root)
 
     venv_dir = Path(sys.executable).parent.parent
     site_packages = venv_dir / "lib" / "python3.12" / "site-packages"

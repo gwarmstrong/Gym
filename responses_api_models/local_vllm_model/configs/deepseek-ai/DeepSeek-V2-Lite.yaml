@@ -1,0 +1,30 @@
+DeepSeek-V2-Lite:
+  responses_api_models:
+    local_vllm_model:
+      entrypoint: app.py
+      model: deepseek-ai/DeepSeek-V2-Lite
+      return_token_id_information: false
+      uses_reasoning_parser: false
+      replace_developer_role_with_system: false
+      debug: false
+
+      hf_home: null
+
+      vllm_serve_env_vars:
+        # TP=2 fits on a single H100 node (16 attn heads / 2 = 8 heads/rank,
+        # ~15GB BF16 weights per rank). DP=2 = two replicas, each on its own
+        # serving node under STRICT_PACK.
+        VLLM_RAY_DP_PACK_STRATEGY: strict
+
+      vllm_serve_kwargs:
+        data_parallel_size: 2
+        tensor_parallel_size: 2
+        pipeline_parallel_size: 1
+
+        trust_remote_code: true
+        gpu_memory_utilization: 0.85
+        # DeepSeek-V2-Lite has 163840 max_pos but most prompts are short;
+        # cap context to keep KV cache small and prevent OOM at boot.
+        max_model_len: 8192
+        # Single MIG-free H100 batch is plenty for a 20-sample smoke.
+        max_num_seqs: 32

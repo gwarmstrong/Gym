@@ -505,18 +505,64 @@ Environment variables: {env_vars_to_print}""")
         1. We estimate the size of a single placement group vLLM will make using TP * PP
         2. We pre-maturely create one placement group of this size which will server as the master node for the vLLM instance
         3. This placement group is also provided on input to the LocalVLLMModelActor, which will schedule (DP - 1) additional placement groups of size TP * PP
+
+        Bundle 0 is pinned to the local node's IP via a small `node:<ip>`
+        resource share so the head PG (and the api_server running in this
+        process) anchor on the same node. The remaining (world_size - 1)
+        GPU bundles float — Ray's PACK strategy keeps them colocated when
+        the replica fits on a single node, and spills onto additional
+        serving nodes when it doesn't.
+
+        For cross-node single replicas (``world_size > num_gpus_per_node``)
+        STRICT_PACK cannot satisfy the multi-node bundle layout, so we
+        force PACK for the head PG regardless of
+        ``VLLM_RAY_DP_PACK_STRATEGY``. Additional DP replicas created in
+        ``_patch_create_dp_placement_groups`` still honour the user's
+        pack_strategy.
+
+        The bundle-0 anchor is also what makes this PG coexist with
+        ``extra_gpu`` nodes — nodes that joined Ray with ``--num-gpus=0
+        --resources='{"extra_gpu": N}'`` to host GPU-side verifiers
+        (e.g. xCOMET-XXL for wmt_translation). Without the pin, Ray's
+        auto-discovery of "available GPU nodes" can land bundles on those
+        masked nodes and either confuse vLLM's downstream node-resource
+        assertions or steal capacity the verifier expects to schedule on.
+        Looking up ``num_gpus_per_node`` via ``total_resources_per_node``
+        (rather than ``available_resources_per_node``) means the masked
+        nodes' real GPU count is invisible here too — so the cross-node
+        decision is taken against actual serving capacity only.
         """
-        # This mirrors the placement group logic above
+        from ray._private.services import get_node_ip_address
+        from ray._private.state import total_resources_per_node
+
         pack_strategy = env_vars["VLLM_RAY_DP_PACK_STRATEGY"]
-        if pack_strategy in ("strict", "fill"):
+        device_str = "GPU"
+        world_size = server_args.pipeline_parallel_size * server_args.tensor_parallel_size
+
+        node_ip = get_node_ip_address()
+        node_resource_key = f"node:{node_ip}"
+        local_node_resources = next(
+            (rs for rs in total_resources_per_node().values() if node_resource_key in rs),
+            None,
+        )
+        if local_node_resources is None:
+            raise RuntimeError(
+                f"Local node {node_ip} not found in Ray cluster resources. "
+                "initialize_ray() must run before LocalVLLMModel.start_vllm_server()."
+            )
+        num_gpus_per_node = int(local_node_resources.get(device_str, 0))
+
+        if world_size > num_gpus_per_node:
+            placement_strategy = "PACK"
+        elif pack_strategy in ("strict", "fill"):
             placement_strategy = "STRICT_PACK"
         else:
             placement_strategy = "PACK"
 
-        device_str = "GPU"
-        device_bundle = [{device_str: 1.0}]
-        world_size = server_args.pipeline_parallel_size * server_args.tensor_parallel_size
-        bundles = device_bundle * world_size + [{"CPU": 1.0}]
+        bundles: List[Dict[str, float]] = [{device_str: 1.0, node_resource_key: 0.01}]
+        bundles += [{device_str: 1.0} for _ in range(world_size - 1)]
+        bundles += [{"CPU": 1.0}]
+
         head_node_placement_group = ray.util.placement_group(
             name=f"{self.config.name}_dp_rank_0",
             strategy=placement_strategy,

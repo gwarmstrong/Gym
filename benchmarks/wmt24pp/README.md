@@ -26,10 +26,13 @@ no HF Hub calls during `verify()`, no rate-limit retries.
 ## Running servers
 
 The xCOMET-XXL actor pool requires the `extra_gpu` Ray resource, which
-is only advertised on multi-node SLURM deployments via NeMo-Skills'
-`get_ray_server_cmd` (see the SLURM block below). Local / single-node
-runs disable COMET via Hydra override and rely on corpus-BLEU only;
-xCOMET scoring still works end-to-end on the cluster path:
+must be advertised by extra nodes that joined Ray with `--num-gpus=0
+--resources='{"extra_gpu": N}'`. Two paths set this up: the all-Gym
+SLURM script described below (`benchmarks/wmt24pp/scripts/submit_slurm.sh`),
+or NeMo-Skills' `get_ray_server_cmd` via `ns nemo_gym_rollouts
+--server_type vllm_dp_ray`. Local / single-node runs disable COMET via
+Hydra override and rely on corpus-BLEU only; xCOMET scoring still works
+end-to-end on the cluster path:
 
 ```bash
 config_paths="responses_api_models/vllm_model/configs/vllm_model.yaml,\
@@ -48,6 +51,40 @@ ng_collect_rollouts \
     +output_jsonl_fpath=results/wmt24pp_rollouts.jsonl \
     +num_repeats=4
 ```
+
+## End-to-end reproduction on a SLURM cluster (all-Gym)
+
+`benchmarks/wmt24pp/scripts/submit_slurm.sh` runs the full benchmark on
+a SLURM allocation without depending on NeMo-Skills. It allocates one
+or more vLLM serving nodes plus one or more `extra_gpu` verifier nodes,
+brings up a Ray cluster spanning both, and then runs
+`ng_e2e_collect_rollouts` against the existing cluster. The verifier
+nodes join Ray with `--num-gpus=0 --resources='{"extra_gpu": N}'`, so
+the xCOMET-XXL actor pool can schedule onto them while vLLM ignores
+their GPUs for DP placement (`LocalVLLMModel` pins the head placement
+group's bundle 0 to the model node, which keeps the api_server colocated
+with DP rank 0 and prevents bundles landing on the masked nodes).
+
+### 2-node smoke run (1 model node + 1 COMET node)
+
+```bash
+# One-time prepare on the cluster (writes JSONL + prefetches xCOMET-XXL):
+ssh <cluster> 'cd <gym-repo> && uv run ng_prepare_benchmark "+config_paths=[benchmarks/wmt24pp/config.yaml]"'
+
+# Submit:
+sbatch \
+    --account=$ACCOUNT --partition=$PARTITION \
+    --nodes=2 --gres=gpu:8 --ntasks-per-node=1 \
+    --time=2:00:00 --job-name=wmt24pp_gym \
+    --export=ALL,GYM_DIR=$PWD,CONTAINER=$IMG_SQSH,HF_HOME_HOST=$HF_DIR,WORKSPACE_HOST=$WS_DIR,MODEL_CONFIG=responses_api_models/local_vllm_model/configs/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16.yaml,LIMIT=20 \
+    benchmarks/wmt24pp/scripts/submit_slurm.sh
+```
+
+The script defaults to `SERVING_NODES = SLURM_NNODES - 1`,
+`EXTRA_GPU_NODES = 1`, and `COMET_NUM_SHARDS = NUM_GPUS_PER_NODE`. Set
+`PACK_STRATEGY=span` if a single replica spans more than one node
+(e.g. TP=16 across two model nodes); see the script header for the full
+knob list.
 
 ## End-to-end reproduction on a SLURM cluster (via NeMo-Skills)
 

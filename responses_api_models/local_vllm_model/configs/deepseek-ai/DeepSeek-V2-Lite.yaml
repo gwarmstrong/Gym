@@ -1,4 +1,7 @@
-DeepSeek-V2-Lite:
+# Top-level key is `policy_model` so wmt24pp's `simple_agent` config (which
+# refers to `model_server: { type: responses_api_models, name: policy_model }`)
+# resolves to this server. The actual model is set by `model:` below.
+policy_model:
   responses_api_models:
     local_vllm_model:
       entrypoint: app.py

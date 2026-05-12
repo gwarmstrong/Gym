@@ -40,10 +40,21 @@ class SGLangModel(VLLMModel):
 
     def model_post_init(self, context):
         if self.config.return_token_id_information:
+            # SGLang 0.5.x's OpenAI-compat /v1/chat/completions does not surface
+            # per-token IDs in the logprobs response (return_tokens_as_token_ids
+            # is silently ignored), and /tokenize accepts only {model, prompt} —
+            # so the chat-style payload VLLMModel uses for prompt-token retrieval
+            # is rejected. Workarounds (server /tokenize on the assistant content
+            # + client-side chat-template apply) are implementable but carry
+            # extra round trips and edge cases (EOS handling, BPE byte-fallback
+            # collisions on multi-byte UTF-8 generation tokens). RL training
+            # rollouts use local_vllm_model today, which gives exact IDs in-band.
             raise NotImplementedError(
-                "SGLangModel does not yet support return_token_id_information=True. "
-                "The vLLM tokenize-endpoint shape used by VLLMModel does not match "
-                "SGLang's /tokenize. Set return_token_id_information=false."
+                "SGLangModel does not support return_token_id_information=True. "
+                "SGLang 0.5.x's OpenAI-compat layer does not surface per-token IDs "
+                "and lifting the guard requires upstream support (filed as a "
+                "follow-up). Use local_vllm_model for RL-training rollouts; "
+                "SGLang is eval/inference-only today."
             )
         if self.config.is_responses_native:
             raise NotImplementedError(

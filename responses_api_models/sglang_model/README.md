@@ -22,8 +22,17 @@ parser/model combinations the Skills adapter was originally written against.
 It is idempotent: it only sets `tool_choice` when the caller has not.
 
 `return_token_id_information` and `is_responses_native` raise `NotImplementedError`
-at startup — both rely on endpoint-specific shapes (`/tokenize`, native
-`/v1/responses`) that haven't been validated against SGLang yet.
+at startup. `return_token_id_information=True` requires per-generation-token
+IDs and prompt-token IDs to be surfaced exactly; SGLang 0.5.x's OpenAI-compat
+layer drops them in `_process_logprobs_tokens` (only `(token_str, logprob)` is
+kept), and `/tokenize` accepts only `{model, prompt}` — chat-style payloads are
+rejected. Workarounds based on server `/tokenize` of the assistant content or
+client-side vocab lookup were evaluated; the latter fails on multi-byte
+UTF-8 byte-fallback tokens (~7% wrong IDs on non-Latin content), the former
+is implementable at the cost of two extra round trips per request + EOS-handling
+edge cases. The adapter is **eval/inference-only**; use `local_vllm_model` for
+RL-training rollouts, which gives exact IDs in-response. Lifting the guard
+requires upstream SGLang support (filed as a follow-up).
 
 ## Usage
 

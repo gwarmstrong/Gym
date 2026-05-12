@@ -1,0 +1,38 @@
+--- a/ray.sub
++++ b/ray.sub
+@@ -50,6 +50,7 @@
+ CONTAINER=$CONTAINER
+ MOUNTS=$MOUNTS
+ COMMAND=${COMMAND:-}  # This is a script relative to the SLURM_SUBMIT_DIR. If left empty, it will leave the cluster idle after it's brought up.
++EXTRA_GPU_NODES=${EXTRA_GPU_NODES:-0}  # If > 0, the last N workers in the allocation join Ray with --num-gpus=0 and advertise the custom 'extra_gpu' resource instead. Lets a GPU-side verifier pool coexist with a DP-on-Ray vLLM on the same allocation without competing for its placement-group bundles. Used by Gym's wmt_translation resource server (xCOMET-XXL).
+ ########################################################
+ # Ports for all nodes (should be odd numbers since we place head/worker[0] on the same node) so all workers get the odd ports, but the head will get +1 the ports
+ NODE_MANAGER_PORT=${NODE_MANAGER_PORT:-53001}
+@@ -303,7 +304,17 @@
+ # Start from node 1 since node 0 is running the head
+ for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
+   node_i=${nodes_array[$i]}
+-    
++
++  # Decide this worker's Ray resource string. extra_gpu workers hide their
++  # GPUs from Ray's GPU accounting so DP placement-group bundles can't land
++  # on them; they re-advertise the same GPUs under the custom 'extra_gpu'
++  # resource that @ray.remote(resources={"extra_gpu": 1}) actors can request.
++  if (( i >= SLURM_JOB_NUM_NODES - EXTRA_GPU_NODES )); then
++    worker_resources_arg="--num-gpus=0 --resources=\"{\\\"extra_gpu\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
++  else
++    worker_resources_arg="--resources=\"{\\\"worker_units\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
++  fi
++
+   worker_cmd=$(cat <<EOF
+ env
+ 
+@@ -365,7 +376,7 @@
+ cat <<EOFINNER | tee /launch-worker.sh
+ ray start --address "$ip_head" \
+           --disable-usage-stats \
+-          --resources="{\"worker_units\": $GPUS_PER_NODE, \"slurm_managed_ray_cluster\": 1}" \
++          $worker_resources_arg \
+           --min-worker-port=${MIN_WORKER_PORT} \
+           --max-worker-port=${MAX_WORKER_PORT} \
+           \

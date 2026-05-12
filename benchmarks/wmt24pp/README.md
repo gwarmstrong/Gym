@@ -65,50 +65,24 @@ them via the matching `resources={"extra_gpu": 1}` request.
 
 `ray.sub` ships uniform-cluster bring-up only — every worker advertises
 the full `GPUS_PER_NODE` count — so a small patch is needed to expose
-the verifier-masking topology. Apply this diff to your local
-NeMo-RL `ray.sub` (the same place aviary documents its `SETUP_COMMAND`
-extension):
+the verifier-masking topology. The patch is checked in at
+[`ray_sub_extra_gpu_nodes.patch`](ray_sub_extra_gpu_nodes.patch) and adds:
 
-```diff
-diff --git a/ray.sub b/ray.sub
---- a/ray.sub
-+++ b/ray.sub
-@@ -50,6 +50,11 @@ maybe_gres_arg() {
- CONTAINER=$CONTAINER
- MOUNTS=$MOUNTS
- COMMAND=${COMMAND:-}  # This is a script relative to the SLURM_SUBMIT_DIR. If left empty, it will leave the cluster idle after it's brought up.
-+EXTRA_GPU_NODES=${EXTRA_GPU_NODES:-0}  # If > 0, the last N workers in the
-+# allocation join Ray with --num-gpus=0 and advertise the custom 'extra_gpu'
-+# resource instead. Lets a GPU-side verifier pool coexist with a DP-on-Ray
-+# vLLM on the same allocation without competing for its placement-group
-+# bundles. Used by Gym's wmt_translation resource server (xCOMET-XXL).
- ########################################################
-@@ -301,6 +306,16 @@ NUM_ACTORS=$((GPUS_PER_NODE * SLURM_JOB_NUM_NODES))
- # Start from node 1 since node 0 is running the head
- for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
-   node_i=${nodes_array[$i]}
+- a top-of-file `EXTRA_GPU_NODES=${EXTRA_GPU_NODES:-0}` env var
+- a per-worker branch in the worker-bringup loop that swaps the default
+  `--resources="{worker_units: …}"` for `--num-gpus=0
+  --resources="{extra_gpu: …}"` on the last `EXTRA_GPU_NODES` ranks
 
-+  # Decide this worker's Ray resource string. extra_gpu workers hide their
-+  # GPUs from Ray's GPU accounting so DP placement-group bundles can't land
-+  # on them; they re-advertise the same GPUs under the custom 'extra_gpu'
-+  # resource that @ray.remote(resources={"extra_gpu": 1}) actors can request.
-+  if (( i >= SLURM_JOB_NUM_NODES - EXTRA_GPU_NODES )); then
-+    worker_resources_arg="--num-gpus=0 --resources=\"{\\\"extra_gpu\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
-+  else
-+    worker_resources_arg="--resources=\"{\\\"worker_units\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
-+  fi
-+
-   worker_cmd=$(cat <<EOF
-@@ -365,7 +380,7 @@ log-sync-sidecar &
- cat <<EOFINNER | tee /launch-worker.sh
- ray start --address "$ip_head" \
-           --disable-usage-stats \
--          --resources="{\"worker_units\": $GPUS_PER_NODE, \"slurm_managed_ray_cluster\": 1}" \
-+          $worker_resources_arg \
-           --min-worker-port=${MIN_WORKER_PORT} \
-           --max-worker-port=${MAX_WORKER_PORT} \
-           \
+Apply it to your local NeMo-RL `ray.sub` with one command (relative
+paths assume you run this from your NeMo-Gym checkout root; adjust the
+`<NEMO_RL_ROOT>` path as needed):
+
+```bash
+patch -p1 -d <NEMO_RL_ROOT> < benchmarks/wmt24pp/ray_sub_extra_gpu_nodes.patch
 ```
+
+This follows the same pattern aviary uses for its `SETUP_COMMAND`
+`ray.sub` extension (see `resources_servers/aviary/README.md`).
 
 ### One-time preparation
 

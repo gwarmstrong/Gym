@@ -63,10 +63,18 @@ startup.
 ## Example usage
 
 The xCOMET-XXL actor pool requires the `extra_gpu` Ray resource, which
-is only advertised on multi-node SLURM deployments. Local / single-node
-runs disable COMET via Hydra override and rely on corpus-BLEU only.
-For an end-to-end SLURM run with COMET enabled, see the
-[`ns nemo_gym_rollouts` block in benchmarks/wmt24pp/README.md](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-via-nemo-skills).
+is only advertised on multi-node SLURM deployments where at least one
+node joined Ray with `--num-gpus=0 --resources='{"extra_gpu": N}'`.
+Local / single-node runs disable COMET via Hydra override and rely on
+corpus-BLEU only. For an end-to-end SLURM run with COMET enabled, see
+either:
+
+- [the all-Gym `ray.sub` path](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-all-gym)
+  — adds a small `EXTRA_GPU_NODES` extension to NeMo-RL's `ray.sub` and
+  launches `ng_e2e_collect_rollouts` from the resulting Ray cluster
+- [the `ns nemo_gym_rollouts` block](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-via-nemo-skills)
+  — uses NeMo-Skills' `vllm_dp_ray` server type to orchestrate the same
+  topology end-to-end
 
 ```bash
 # Running servers (BLEU-only locally; flip compute_comet=true on cluster)
@@ -85,8 +93,10 @@ ng_collect_rollouts \
 
 For a fully reproducible end-to-end SLURM run that brings up vLLM with
 the right Ray topology (model node + a hidden `extra_gpu` node for the
-COMET actor pool) and launches Gym in one shot, see the
-[`ns nemo_gym_rollouts` block in benchmarks/wmt24pp/README.md](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-via-nemo-skills).
+COMET actor pool) and launches Gym in one shot, see either the
+[all-Gym `ray.sub` block](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-all-gym)
+or the [`ns nemo_gym_rollouts` block](../../benchmarks/wmt24pp/README.md#end-to-end-reproduction-on-a-slurm-cluster-via-nemo-skills)
+in `benchmarks/wmt24pp/README.md`.
 
 ## Config
 

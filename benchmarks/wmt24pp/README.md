@@ -28,8 +28,9 @@ no HF Hub calls during `verify()`, no rate-limit retries.
 The xCOMET-XXL actor pool requires the `extra_gpu` Ray resource, which
 must be advertised by extra nodes that joined Ray with `--num-gpus=0
 --resources='{"extra_gpu": N}'`. Two paths set this up: the all-Gym
-SLURM script described below (`benchmarks/wmt24pp/scripts/submit_slurm.sh`),
-or NeMo-Skills' `get_ray_server_cmd` via `ns nemo_gym_rollouts
+NeMo-RL `ray.sub` path described below (a small `EXTRA_GPU_NODES` diff
+to `ray.sub`, mirroring aviary's `SETUP_COMMAND` pattern), or
+NeMo-Skills' `get_ray_server_cmd` via `ns nemo_gym_rollouts
 --server_type vllm_dp_ray`. Local / single-node runs disable COMET via
 Hydra override and rely on corpus-BLEU only; xCOMET scoring still works
 end-to-end on the cluster path:
@@ -54,37 +55,128 @@ ng_collect_rollouts \
 
 ## End-to-end reproduction on a SLURM cluster (all-Gym)
 
-`benchmarks/wmt24pp/scripts/submit_slurm.sh` runs the full benchmark on
-a SLURM allocation without depending on NeMo-Skills. It allocates one
-or more vLLM serving nodes plus one or more `extra_gpu` verifier nodes,
-brings up a Ray cluster spanning both, and then runs
-`ng_e2e_collect_rollouts` against the existing cluster. The verifier
-nodes join Ray with `--num-gpus=0 --resources='{"extra_gpu": N}'`, so
-the xCOMET-XXL actor pool can schedule onto them while vLLM ignores
-their GPUs for DP placement (`LocalVLLMModel` pins the head placement
-group's bundle 0 to the model node, which keeps the api_server colocated
-with DP rank 0 and prevents bundles landing on the masked nodes).
+This path runs the full benchmark — vLLM DP serving plus the xCOMET-XXL
+actor pool — on a single SLURM allocation against NeMo-RL's `ray.sub`,
+without going through NeMo-Skills. The verifier node(s) join Ray with
+`--num-gpus=0 --resources='{"extra_gpu": N}'`: vLLM's DP placement
+ignores their GPUs (so model bundles can't accidentally land on a
+verifier node) while wmt_translation's CometActor pool schedules onto
+them via the matching `resources={"extra_gpu": 1}` request.
 
-### 2-node smoke run (1 model node + 1 COMET node)
+`ray.sub` ships uniform-cluster bring-up only — every worker advertises
+the full `GPUS_PER_NODE` count — so a small patch is needed to expose
+the verifier-masking topology. Apply this diff to your local
+NeMo-RL `ray.sub` (the same place aviary documents its `SETUP_COMMAND`
+extension):
 
-```bash
-# One-time prepare on the cluster (writes JSONL + prefetches xCOMET-XXL):
-ssh <cluster> 'cd <gym-repo> && uv run ng_prepare_benchmark "+config_paths=[benchmarks/wmt24pp/config.yaml]"'
+```diff
+diff --git a/ray.sub b/ray.sub
+--- a/ray.sub
++++ b/ray.sub
+@@ -50,6 +50,11 @@ maybe_gres_arg() {
+ CONTAINER=$CONTAINER
+ MOUNTS=$MOUNTS
+ COMMAND=${COMMAND:-}  # This is a script relative to the SLURM_SUBMIT_DIR. If left empty, it will leave the cluster idle after it's brought up.
++EXTRA_GPU_NODES=${EXTRA_GPU_NODES:-0}  # If > 0, the last N workers in the
++# allocation join Ray with --num-gpus=0 and advertise the custom 'extra_gpu'
++# resource instead. Lets a GPU-side verifier pool coexist with a DP-on-Ray
++# vLLM on the same allocation without competing for its placement-group
++# bundles. Used by Gym's wmt_translation resource server (xCOMET-XXL).
+ ########################################################
+@@ -301,6 +306,16 @@ NUM_ACTORS=$((GPUS_PER_NODE * SLURM_JOB_NUM_NODES))
+ # Start from node 1 since node 0 is running the head
+ for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
+   node_i=${nodes_array[$i]}
 
-# Submit:
-sbatch \
-    --account=$ACCOUNT --partition=$PARTITION \
-    --nodes=2 --gres=gpu:8 --ntasks-per-node=1 \
-    --time=2:00:00 --job-name=wmt24pp_gym \
-    --export=ALL,GYM_DIR=$PWD,CONTAINER=$IMG_SQSH,HF_HOME_HOST=$HF_DIR,WORKSPACE_HOST=$WS_DIR,MODEL_CONFIG=responses_api_models/local_vllm_model/configs/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16.yaml,LIMIT=20 \
-    benchmarks/wmt24pp/scripts/submit_slurm.sh
++  # Decide this worker's Ray resource string. extra_gpu workers hide their
++  # GPUs from Ray's GPU accounting so DP placement-group bundles can't land
++  # on them; they re-advertise the same GPUs under the custom 'extra_gpu'
++  # resource that @ray.remote(resources={"extra_gpu": 1}) actors can request.
++  if (( i >= SLURM_JOB_NUM_NODES - EXTRA_GPU_NODES )); then
++    worker_resources_arg="--num-gpus=0 --resources=\"{\\\"extra_gpu\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
++  else
++    worker_resources_arg="--resources=\"{\\\"worker_units\\\": $GPUS_PER_NODE, \\\"slurm_managed_ray_cluster\\\": 1}\""
++  fi
++
+   worker_cmd=$(cat <<EOF
+@@ -365,7 +380,7 @@ log-sync-sidecar &
+ cat <<EOFINNER | tee /launch-worker.sh
+ ray start --address "$ip_head" \
+           --disable-usage-stats \
+-          --resources="{\"worker_units\": $GPUS_PER_NODE, \"slurm_managed_ray_cluster\": 1}" \
++          $worker_resources_arg \
+           --min-worker-port=${MIN_WORKER_PORT} \
+           --max-worker-port=${MAX_WORKER_PORT} \
+           \
 ```
 
-The script defaults to `SERVING_NODES = SLURM_NNODES - 1`,
-`EXTRA_GPU_NODES = 1`, and `COMET_NUM_SHARDS = NUM_GPUS_PER_NODE`. Set
-`PACK_STRATEGY=span` if a single replica spans more than one node
-(e.g. TP=16 across two model nodes); see the script header for the full
-knob list.
+### One-time preparation
+
+```bash
+# Writes the benchmark JSONL and pre-fetches Unbabel/XCOMET-XXL +
+# facebook/xlm-roberta-xxl into HF_HOME so the CometActors stay offline.
+ng_prepare_benchmark "+config_paths=[benchmarks/wmt24pp/config.yaml]"
+```
+
+### Container requirements
+
+`ray.sub` runs a single container on every node. For this path the image
+must contain, at the system level:
+
+- `vllm` and `ray` compatible with `LocalVLLMModel` (vLLM 0.18.x +
+  Ray 2.52.x is the validated combination)
+- `nemo-gym` (so `ng_e2e_collect_rollouts` is on `PATH`)
+- `unbabel-comet>=2.2` and `sacrebleu[ja,ko]>=2.4` for the wmt_translation
+  resource server
+
+The set of pins above is roughly `pip install vllm==0.18.1
+"ray[default]==2.52.1" -e <gym-repo> "unbabel-comet>=2.2"
+"sacrebleu[ja,ko]>=2.4"` applied on top of `vllm/vllm-openai:v0.18.1`.
+
+### Launch
+
+```bash
+# 5 nodes = 4 vLLM serving + 1 xCOMET-XXL verifier.
+# Bumps to bigger topologies just scale --nodes and EXTRA_GPU_NODES.
+
+read -r -d '' COMMAND <<'EOF'
+ng_e2e_collect_rollouts \
+    "+config_paths=[responses_api_models/local_vllm_model/configs/deepseek-ai/DeepSeek-V2-Lite.yaml,benchmarks/wmt24pp/config.yaml]" \
+    ++output_jsonl_fpath=results/wmt24pp_rollouts.jsonl \
+    ++split=benchmark \
+    ++num_repeats=1 \
+    ++num_samples_in_parallel=32 \
+    ++reuse_existing_data_preparation=true \
+    ++limit=20 \
+    ++wmt24pp_wmt_translation_resources_server.resources_servers.wmt_translation.compute_comet=true \
+    ++wmt24pp_wmt_translation_resources_server.resources_servers.wmt_translation.comet_num_shards=8
+EOF
+
+COMMAND="$COMMAND" \
+CONTAINER=<image-with-vllm+gym+comet> \
+MOUNTS="$PWD:$PWD" \
+EXTRA_GPU_NODES=1 \
+sbatch \
+    --nodes=5 --gres=gpu:8 --time=01:00:00 \
+    --account=<your-account> --partition=<your-partition> \
+    --job-name=wmt24pp_4plus1 \
+    ray.sub
+```
+
+The model yaml's `vllm_serve_kwargs` controls `data_parallel_size` /
+`tensor_parallel_size`; the canned `DeepSeek-V2-Lite.yaml` ships TP=2
+DP=2. If a single replica spans more than one node (e.g. `TP=16` across
+two model nodes), set `VLLM_RAY_DP_PACK_STRATEGY=span` in the model
+yaml's `vllm_serve_env_vars`.
+
+`ng_e2e_collect_rollouts` runs on the Ray head (rank 0) inside the
+container; `initialize_ray()` discovers the cluster automatically via
+`ray.init(address="auto")` so no extra address plumbing is needed.
+
+Output artifacts land under `results/`: `wmt24pp_rollouts.jsonl` carries
+per-row `sentence_bleu` and `comet_score`; the corresponding
+`*_aggregate_metrics.json` carries per-pair (`en->de_DE/comet`) and
+cross-pair (`en->xx/comet`, `xx->xx/comet`) aggregations.
 
 ## End-to-end reproduction on a SLURM cluster (via NeMo-Skills)
 

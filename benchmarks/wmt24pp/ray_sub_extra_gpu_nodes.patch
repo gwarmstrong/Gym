@@ -8,6 +8,15 @@
  ########################################################
  # Ports for all nodes (should be odd numbers since we place head/worker[0] on the same node) so all workers get the odd ports, but the head will get +1 the ports
  NODE_MANAGER_PORT=${NODE_MANAGER_PORT:-53001}
+@@ -295,7 +296,7 @@
+ srun $COMMON_SRUN_ARGS --container-name=ray-head --nodes=1 --ntasks=1 --cpus-per-task=$CPUS_PER_WORKER -w "$head_node" -o $LOG_DIR/ray-head.log bash -x -c "$head_cmd" &
+ SRUN_PIDS["ray-head"]=$!
+ 
+-NUM_ACTORS=$((GPUS_PER_NODE * SLURM_JOB_NUM_NODES))
++NUM_ACTORS=$((GPUS_PER_NODE * (SLURM_JOB_NUM_NODES - EXTRA_GPU_NODES)))
+ 
+ # Start Ray worker nodes
+ # We want 1 Ray worker node per physical node (excluding the head node)
 @@ -303,7 +304,17 @@
  # Start from node 1 since node 0 is running the head
  for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do

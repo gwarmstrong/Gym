@@ -1,0 +1,19 @@
+config_paths:
+  - resources_servers/code_gen/configs/code_gen.yaml
+
+livecodebench_v5_2407_2412_code_gen_resources_server:
+  _inherit_from: code_gen
+
+livecodebench_v5_2407_2412_code_gen_simple_agent:
+  _inherit_from: code_gen_simple_agent
+  responses_api_agents:
+    simple_agent:
+      resources_server:
+        name: livecodebench_v5_2407_2412_code_gen_resources_server
+      datasets:
+      - name: livecodebench_v5_2407_2412
+        type: benchmark
+        jsonl_fpath: benchmarks/livecodebench/v5_2407_2412/data/livecodebench_v5_2407_2412_validation.jsonl
+        prompt_config: benchmarks/livecodebench/prompts/default.yaml
+        prepare_script: benchmarks/livecodebench/v5_2407_2412/prepare.py
+        num_repeats: 3

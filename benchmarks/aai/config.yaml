@@ -18,6 +18,15 @@ aalcr_benchmark_resources_server:
         type: responses_api_models
         name: policy_model
 
+# Stub the Qwen3-235B server with dummy base_url/api_key so ng_run's startup
+# validation passes. Nothing calls this server since the judge override above
+# routes through policy_model instead.
+Qwen3-235B-A22B-Instruct-2507-FP8:
+  responses_api_models:
+    vllm_model:
+      base_url: http://unused.invalid/v1
+      api_key: unused
+
 # Per-sub prompt overrides: replace each sub-benchmark's default prompt with the
 # AAI-specific prompt from Skills' nemo_skills/prompt/config/eval/aai/.
 # (mmlu_pro and gpqa AAI prompts already byte-match Gym's defaults, so no override.)

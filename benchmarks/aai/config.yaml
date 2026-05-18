@@ -7,6 +7,17 @@ config_paths:
   - benchmarks/ifbench/config.yaml
   - benchmarks/aalcr/config.yaml
 
+# AALCR ships a config that wires its judge to a separately-hosted
+# Qwen3-235B-A22B-Instruct-2507-FP8 endpoint. We don't have one available for
+# this migration; use the policy model as judge (deviates from full AA-LCR
+# methodology — documented in COMPARISON_RESULTS.md).
+aalcr_benchmark_resources_server:
+  resources_servers:
+    aalcr:
+      judge_model_server:
+        type: responses_api_models
+        name: policy_model
+
 # Per-sub prompt overrides: replace each sub-benchmark's default prompt with the
 # AAI-specific prompt from Skills' nemo_skills/prompt/config/eval/aai/.
 # (mmlu_pro and gpqa AAI prompts already byte-match Gym's defaults, so no override.)

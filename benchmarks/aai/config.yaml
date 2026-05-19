@@ -5,27 +5,15 @@ config_paths:
   - benchmarks/aime25/config.yaml
   - benchmarks/livecodebench/v5_2407_2412/config.yaml
   - benchmarks/ifbench/config.yaml
-  - benchmarks/aalcr/config.yaml
 
-# AALCR ships a config that wires its judge to a separately-hosted
-# Qwen3-235B-A22B-Instruct-2507-FP8 endpoint. We don't have one available for
-# this migration; use the policy model as judge (deviates from full AA-LCR
-# methodology — documented in COMPARISON_RESULTS.md).
-aalcr_benchmark_resources_server:
-  resources_servers:
-    aalcr:
-      judge_model_server:
-        type: responses_api_models
-        name: policy_model
-
-# Stub the Qwen3-235B server with dummy base_url/api_key so ng_run's startup
-# validation passes. Nothing calls this server since the judge override above
-# routes through policy_model instead.
-Qwen3-235B-A22B-Instruct-2507-FP8:
-  responses_api_models:
-    vllm_model:
-      base_url: http://unused.invalid/v1
-      api_key: unused
+# AALCR DROPPED from this migration scope.
+# Its config wires the judge to a separately-hosted Qwen3-235B-A22B endpoint
+# that we don't have available. Overriding the judge to policy_model didn't
+# stop the embedded Qwen3 stub from being polled at ~500 req/s by something in
+# the AALCR pipeline (3.6M retries in 2h on the unreachable stub URL, which
+# starved every other agent of slots). Until that routing bug is understood,
+# AALCR is out of the AAI suite. AAI overall_score / merge.py / score.py are
+# computed over the remaining 6 subs.
 
 # Per-sub prompt overrides: replace each sub-benchmark's default prompt with the
 # AAI-specific prompt from Skills' nemo_skills/prompt/config/eval/aai/.

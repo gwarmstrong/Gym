@@ -70,12 +70,7 @@ AAI_SUBS = [
         "benchmarks/ifbench/data/ifbench_benchmark.jsonl",
         "benchmarks/ifbench/prompts/default.yaml",
     ),
-    (
-        "aalcr",
-        "aalcr_benchmark_simple_agent",
-        "benchmarks/aalcr/data/aalcr_benchmark.jsonl",
-        None,
-    ),
+    # aalcr DROPPED — see benchmarks/aai/config.yaml comment.
 ]
 
 

@@ -24,8 +24,8 @@ AAI_SUBS = {
     "aime25": ("aime25_math_with_judge_simple_agent", "judge_accuracy"),
     "livecodebench": ("livecodebench_v5_2407_2412_code_gen_simple_agent", "accuracy"),
     "ifbench": ("ifbench_benchmark_simple_agent", "accuracy"),
-    "aalcr": ("aalcr_benchmark_simple_agent", "accuracy"),
-    # scicode skipped per migration scope
+    # scicode skipped per migration scope.
+    # aalcr DROPPED — see benchmarks/aai/config.yaml comment.
 }
 
 
@@ -78,7 +78,7 @@ def compute_score(aggregate_metrics: List[Dict[str, Any]]) -> Dict[str, float]:
         **{k: (v if v is not None else float("nan")) for k, v in sub_scores.items()},
         "n_subs_present": len(present),
         "n_subs_expected_full_aai": 8,
-        "n_subs_expected_this_migration": 7,
+        "n_subs_expected_this_migration": 6,
     }
 
 

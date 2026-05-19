@@ -16,14 +16,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# Map AAI sub-benchmark short names → (Gym agent_name, score-fn key)
+# Map AAI sub-benchmark short names → (Gym agent_name, primary score-fn key,
+# fallback mean/* key). The primary key is what `pass@1[avg-of-N]/<key>` looks
+# like in agent_metrics; the fallback is for agents whose compute_metrics()
+# doesn't emit pass@k (just mean/median/std), which lets us still pull a
+# scalar accuracy for the composite score.
 AAI_SUBS = {
-    "mmlu_pro": ("mmlu_pro_mcqa_simple_agent", "accuracy"),
-    "hle": ("hle_equivalence_llm_judge_simple_agent", "accuracy"),
-    "gpqa": ("gpqa_mcqa_simple_agent", "accuracy"),
-    "aime25": ("aime25_math_with_judge_simple_agent", "judge_accuracy"),
-    "livecodebench": ("livecodebench_v5_2407_2412_code_gen_simple_agent", "accuracy"),
-    "ifbench": ("ifbench_benchmark_simple_agent", "accuracy"),
+    "mmlu_pro": ("mmlu_pro_mcqa_simple_agent", "accuracy", "mean/reward"),
+    "hle": ("hle_equivalence_llm_judge_simple_agent", "accuracy", "mean/reward"),
+    "gpqa": ("gpqa_mcqa_simple_agent", "accuracy", "mean/reward"),
+    # aime25 server returns symbolic_accuracy + judge_accuracy; AAI methodology
+    # uses symbolic_correct, so prefer symbolic_accuracy.
+    "aime25": ("aime25_math_with_judge_simple_agent", "symbolic_accuracy", "mean/reward"),
+    "livecodebench": ("livecodebench_v5_2407_2412_code_gen_simple_agent", "accuracy", "mean/reward"),
+    # ifbench server emits mean/follow_all_instructions (matches Skills'
+    # `average_score`); no pass@k.
+    "ifbench": ("ifbench_benchmark_simple_agent", "accuracy", "mean/follow_all_instructions"),
     # scicode skipped per migration scope.
     # aalcr DROPPED — see benchmarks/aai/config.yaml comment.
 }
@@ -57,12 +65,17 @@ def _agent_by_name(aggregate_metrics: List[Dict[str, Any]], agent_name: str) -> 
 def compute_score(aggregate_metrics: List[Dict[str, Any]]) -> Dict[str, float]:
     """Reproduce nemo_skills.dataset.aai.aai_score.compute_score against Gym output."""
     sub_scores: Dict[str, Optional[float]] = {}
-    for short, (agent_name, score_key) in AAI_SUBS.items():
+    for short, (agent_name, score_key, fallback_key) in AAI_SUBS.items():
         entry = _agent_by_name(aggregate_metrics, agent_name)
         if entry is None:
             sub_scores[short] = None
             continue
-        sub_scores[short] = _find_pass_at_1(entry.get("agent_metrics", {}), score_key)
+        agent_metrics = entry.get("agent_metrics", {})
+        score = _find_pass_at_1(agent_metrics, score_key)
+        if score is None and fallback_key in agent_metrics:
+            # Mean/* fallback returns 0–1; pass@1 keys are 0–100. Rescale.
+            score = agent_metrics[fallback_key] * 100
+        sub_scores[short] = score
 
     present = {k: v for k, v in sub_scores.items() if v is not None}
     overall = sum(present.values()) / len(present) if present else 0.0

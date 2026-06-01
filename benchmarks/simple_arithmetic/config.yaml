@@ -1,0 +1,22 @@
+# Synthetic arithmetic smoke benchmark — Gym-only, no Skills counterpart.
+# Reuses the math_with_judge resource server unchanged.
+config_paths:
+  - resources_servers/math_with_judge/configs/math_with_judge.yaml
+
+# Isolated instances via _inherit_from so overrides here don't leak.
+simple_arithmetic_math_with_judge_resources_server:
+  _inherit_from: math_with_judge
+
+simple_arithmetic_math_with_judge_simple_agent:
+  _inherit_from: math_with_judge_simple_agent
+  responses_api_agents:
+    simple_agent:
+      resources_server:
+        name: simple_arithmetic_math_with_judge_resources_server
+      datasets:
+      - name: simple_arithmetic
+        type: benchmark
+        jsonl_fpath: benchmarks/simple_arithmetic/data/simple_arithmetic_benchmark.jsonl
+        prompt_config: benchmarks/prompts/generic/math.yaml
+        prepare_script: benchmarks/simple_arithmetic/prepare.py
+        license: Apache 2.0

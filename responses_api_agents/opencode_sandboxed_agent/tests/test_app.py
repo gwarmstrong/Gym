@@ -669,6 +669,61 @@ class TestOpenCodeSandboxedAgent:
         assert server._sandbox_id_to_sandbox == {}
         assert server._sandbox_id_to_run_result == {}
 
+    @mark.parametrize("interruption", ["cancel_while_connecting", "connect_error", "tool_server_error"])
+    async def test_a_seeded_sandbox_is_stopped_when_the_rollout_ends_before_using_it(self, interruption: str) -> None:
+        """The resources server started the sandbox and stops it only in /verify, which this rollout never reaches."""
+
+        class Response:
+            ok = True
+            cookies: dict[str, str] = {}
+
+            async def json(self) -> dict[str, Any]:
+                return {"sandbox_handle": "seeded-sandbox"}
+
+        request = SimpleNamespace(cookies={}, session={SESSION_ID_KEY: "session-1"}, state=SimpleNamespace())
+        server_client = MagicMock(spec=ServerClient)
+        server_client.post = AsyncMock(return_value=Response())
+        server = OpenCodeSandboxedAgent(config=self._create_config(), server_client=server_client)
+
+        connecting = anyio.Event()
+        stopped: list[str] = []
+
+        class Seeded:
+            async def stop(self) -> None:
+                await anyio.sleep(0)  # where an unshielded stop would be cancelled
+                stopped.append("seeded-sandbox")
+
+        async def start_sandbox(sandbox_id: str | None = None, workdir: str | None = None) -> Any:
+            # The rollout's own connect is the first call, unless tool-server seeding failed before it.
+            if not connecting.is_set() and interruption != "tool_server_error":
+                connecting.set()
+                if interruption == "connect_error":
+                    raise RuntimeError("connect failed")
+                await anyio.sleep_forever()
+            await anyio.sleep(0)
+            return Seeded()
+
+        server._start_sandbox = start_sandbox
+        if interruption == "tool_server_error":
+            server._seed_tool_servers = AsyncMock(side_effect=RuntimeError("tool server unreachable"))
+        body = OpenCodeSandboxedAgentRunRequest.model_validate(
+            {"responses_create_params": {"input": [{"role": "user", "content": "solve"}]}}
+        )
+
+        if interruption == "connect_error":
+            with raises(RuntimeError, match="connect failed"):
+                await server.run(request, body)
+        elif interruption == "tool_server_error":
+            with raises(RuntimeError, match="tool server unreachable"):
+                await server.run(request, body)
+        else:
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(server.run, request, body)
+                await connecting.wait()
+                task_group.cancel_scope.cancel()
+
+        assert stopped == ["seeded-sandbox"], "the seeded sandbox was left running"
+
 
 class TestBenchmarkLifecycle:
     _create_config = TestOpenCodeSandboxedAgent._create_config

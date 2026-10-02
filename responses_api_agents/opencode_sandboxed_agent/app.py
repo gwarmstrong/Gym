@@ -25,7 +25,7 @@ from traceback import format_exc
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from anyio import CancelScope
+from anyio import CancelScope, move_on_after
 from fastapi import Request
 from openai.types.responses import ResponseInputTextParam
 from pydantic import ConfigDict, Field
@@ -82,6 +82,10 @@ from nemo_gym.server_utils import (
     raise_for_status,
 )
 from responses_api_agents.opencode_agent.observability import append_opencode_turns, scope_opencode_trajectory
+
+
+# A healthy reconnect takes seconds; this only stops a broken one from holding a cancelled handler.
+SEEDED_SANDBOX_STOP_TIMEOUT_S = 60
 
 
 def _load_json(value: Any) -> dict[str, Any]:
@@ -1020,6 +1024,19 @@ class OpenCodeSandboxedAgent(SimpleResponsesAPIAgent):
         pending.replace(results_dir / "generation.json")
         return response
 
+    async def _stop_seeded_sandbox(self, sandbox_id: str) -> None:
+        """Stop the sandbox the resources server seeded when the rollout failed or was cancelled before using it.
+
+        Nothing else stops it before its TTL: the resources server stops it only in /verify. Shielded
+        for the same reason as the stop in `_run`, and bounded because reconnecting can otherwise wait
+        out the provider's whole connect timeout.
+        """
+        with move_on_after(SEEDED_SANDBOX_STOP_TIMEOUT_S, shield=True):
+            try:
+                await (await self._start_sandbox(sandbox_id=sandbox_id)).stop()
+            except Exception:
+                print("Failed to stop the seeded sandbox", format_exc(), file=sys.stderr)
+
     async def run(
         self, request: Request, body: OpenCodeSandboxedAgentRunRequest
     ) -> OpenCodeSandboxedAgentVerifyResponse:
@@ -1042,15 +1059,20 @@ class OpenCodeSandboxedAgent(SimpleResponsesAPIAgent):
         await raise_for_status(seed_session_response)
         cookies = cookies | seed_session_response.cookies
 
-        request.state._ng_opencode_mcp = await self._seed_tool_servers(request, body)
-
         # @bxyu-nvidia: "sandbox_handle" comes from resources_servers/swebench/app.py
         # Once we graduate to use the sandbox server, this will be in a generic seed_session type that can be model validated.
         seed_session_result = await seed_session_response.json()
-        sandbox = await self._start_sandbox(
-            sandbox_id=seed_session_result.get("sandbox_handle"),
-            workdir=seed_session_result.get("workdir"),
-        )
+        seeded_sandbox_id = seed_session_result.get("sandbox_handle")
+        try:
+            request.state._ng_opencode_mcp = await self._seed_tool_servers(request, body)
+            sandbox = await self._start_sandbox(
+                sandbox_id=seeded_sandbox_id,
+                workdir=seed_session_result.get("workdir"),
+            )
+        except BaseException:
+            if seeded_sandbox_id:
+                await self._stop_seeded_sandbox(seeded_sandbox_id)
+            raise
         self._sandbox_id_to_sandbox[request.session[SESSION_ID_KEY]] = sandbox
 
         # Propagating the sandbox handle

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import anyio
 import httpx
 import pytest
 
@@ -164,6 +165,110 @@ async def test_create_does_not_retry_rejected_credentials():
     with pytest.raises(SandboxApiException):
         await provider.create(SandboxSpec(image="task"))
     provider._create_once.assert_awaited_once()
+
+
+class FakeSandboxServer:
+    """Sandboxes a fake OpenSandbox server holds, and the ones a cleanup terminated."""
+
+    def __init__(self, *, honours_filter: bool) -> None:
+        self.sandboxes: dict[str, dict[str, str]] = {"unrelated": {"nemo-gym.nvidia.com/create": "another-create"}}
+        self.killed: list[str] = []
+        self.honours_filter = honours_filter
+
+    def manager_class(self) -> type:
+        server = self
+
+        class Manager:
+            @classmethod
+            async def create(cls, _connection_config: Any) -> "Manager":
+                return cls()
+
+            async def list_sandbox_infos(self, sandbox_filter: Any) -> Any:
+                infos = [
+                    SimpleNamespace(id=sandbox_id, metadata=metadata)
+                    for sandbox_id, metadata in server.sandboxes.items()
+                    if not server.honours_filter
+                    or all(metadata.get(key) == value for key, value in sandbox_filter.metadata.items())
+                ]
+                return SimpleNamespace(sandbox_infos=infos)
+
+            async def kill_sandbox(self, sandbox_id: str) -> None:
+                # A checkpoint: under the disconnect middleware's cancel scope an unshielded kill dies here.
+                await asyncio.sleep(0)
+                server.killed.append(sandbox_id)
+
+            async def close(self) -> None:
+                return None
+
+        return Manager
+
+
+@pytest.mark.parametrize("server_honours_filter", [True, False])
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+async def test_create_interrupted_mid_request_terminates_its_sandbox(
+    monkeypatch: pytest.MonkeyPatch, interruption: str, server_honours_filter: bool
+) -> None:
+    """The server answers a create only once the sandbox runs, so an interrupted create has no id to clean up."""
+    server = FakeSandboxServer(honours_filter=server_honours_filter)
+    request_sent = asyncio.Event()
+
+    class PendingSandbox(FakeSandbox):
+        @classmethod
+        async def create(cls, *_args: Any, **kwargs: Any) -> "PendingSandbox":
+            server.sandboxes["created"] = kwargs["metadata"]
+            request_sent.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(
+        opensandbox_provider,
+        "_require_opensandbox_sdk",
+        lambda: (PendingSandbox, FakeConnectionConfig, object, FakePlatformSpec, object),
+    )
+    monkeypatch.setattr(
+        opensandbox_provider, "_require_opensandbox_manager", lambda: (server.manager_class(), SimpleNamespace)
+    )
+    provider = opensandbox_provider.OpenSandboxProvider(
+        create={"retries": 0, "timeout_s": 0.05 if interruption == "timeout" else None}, probe={"command": None}
+    )
+
+    if interruption == "timeout":
+        with pytest.raises(opensandbox_provider.OpenSandboxCreateTimeoutError):
+            await provider.create(SandboxSpec(image="task"))
+    else:
+        # Cancelled the way the disconnect middleware cancels a handler: re-delivered at every await.
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(provider.create, SandboxSpec(image="task"))
+            await request_sent.wait()
+            task_group.cancel_scope.cancel()
+
+    assert server.killed == ["created"]
+
+
+async def test_create_cancelled_during_verification_terminates_its_sandbox(
+    fake_opensandbox_sdk: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = opensandbox_provider.OpenSandboxProvider(create={"retries": 0}, probe={"command": None})
+    verifying = asyncio.Event()
+    killed: list[str] = []
+
+    async def verify(_handle: Any) -> None:
+        verifying.set()
+        await asyncio.Event().wait()
+
+    async def kill(sandbox: FakeSandbox) -> None:
+        await asyncio.sleep(0)
+        killed.append(sandbox.id)
+
+    monkeypatch.setattr(provider, "_verify_created_handle", verify)
+    monkeypatch.setattr(FakeSandbox, "kill", kill, raising=False)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(provider.create, SandboxSpec(image="task"))
+        await verifying.wait()
+        task_group.cancel_scope.cancel()
+
+    assert killed == ["sandbox-1"]
 
 
 @pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf")])
@@ -1823,7 +1928,9 @@ async def test_create_injects_attribution_metadata(
 
     await provider.create(SandboxSpec(image="image:tag", metadata={"purpose": "test"}))
 
-    assert FakeSandbox.created_kwargs["metadata"] == {
+    metadata = dict(FakeSandbox.created_kwargs["metadata"])
+    assert len(metadata.pop("nemo-gym.nvidia.com/create")) == 32  # unique per create request
+    assert metadata == {
         "nemo-gym.nvidia.com/team": "gym_team",
         "nemo-gym.nvidia.com/user": "alice",
         "nemo-gym.nvidia.com/workload": "swe-gym",
@@ -1846,7 +1953,9 @@ async def test_create_spec_metadata_and_config_win_over_attribution_detection(
 
     await provider.create(SandboxSpec(image="image:tag", metadata={"nemo-gym.nvidia.com/team": "explicit-team"}))
 
-    assert FakeSandbox.created_kwargs["metadata"] == {
+    metadata = dict(FakeSandbox.created_kwargs["metadata"])
+    assert metadata.pop("nemo-gym.nvidia.com/create")
+    assert metadata == {
         "nemo-gym.nvidia.com/team": "explicit-team",
         "nemo-gym.nvidia.com/user": "cfg-user",
         "nemo-gym.nvidia.com/workload": "cfg-workload",
@@ -1866,7 +1975,8 @@ async def test_create_attribution_disabled(
 
     await provider.create(SandboxSpec(image="image:tag"))
 
-    assert FakeSandbox.created_kwargs["metadata"] == {}
+    # The create label stays: it is how a failed create finds the sandbox it left behind.
+    assert list(FakeSandbox.created_kwargs["metadata"]) == ["nemo-gym.nvidia.com/create"]
 
 
 @pytest.mark.parametrize(

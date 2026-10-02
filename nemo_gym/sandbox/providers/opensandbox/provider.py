@@ -27,6 +27,9 @@ from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
+
+from anyio import CancelScope, move_on_after
 
 from nemo_gym.sandbox.attribution import RUN_KEY, log_attribution_once, resolve_attribution, resolve_run_id
 from nemo_gym.sandbox.providers.base import (
@@ -129,6 +132,9 @@ RETRYABLE_ERROR_MARKERS = (
 METADATA_VALUE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 # Kubernetes prefixed-key namespace for auto-injected attribution labels (team/user/workload/run).
 DEFAULT_ATTRIBUTION_KEY_PREFIX = "nemo-gym.nvidia.com/"
+# Label unique to one create request, under the attribution prefix; the only way to find
+# a sandbox whose create never returned its id.
+CREATE_KEY = "create"
 # Kubernetes label-key prefixes must be DNS-1123 subdomains (max 253 chars).
 ATTRIBUTION_KEY_PREFIX_RE = re.compile(r"(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*")
 DEFAULT_IMAGE_PULL_POLICY = "IfNotPresent"
@@ -160,6 +166,14 @@ def _require_opensandbox_sdk() -> tuple[Any, Any, Any, Any, Any]:
         ) from e
 
     return Sandbox, ConnectionConfig, RunCommandOpts, PlatformSpec, Volume
+
+
+def _require_opensandbox_manager() -> tuple[Any, Any]:
+    _require_opensandbox_sdk()
+    from opensandbox.manager import SandboxManager
+    from opensandbox.models.sandboxes import SandboxFilter
+
+    return SandboxManager, SandboxFilter
 
 
 def _require_tenacity() -> tuple[Any, Any, Any, Any]:
@@ -1379,12 +1393,46 @@ class OpenSandboxProvider:
 
     async def _cleanup_failed_create_handle(self, handle: SandboxHandle) -> None:
         try:
-            await self.close(handle)
+            # Shielded: a cancelled create must still terminate what it created.
+            with CancelScope(shield=True):
+                await self.close(handle)
         except Exception as e:
             LOGGER.warning(
                 "Failed to clean up OpenSandbox sandbox after create probe failure; sandbox_id=%s; error=%r",
                 handle.sandbox_id,
                 e,
+            )
+
+    async def _kill_unreturned_create(self, create_key: str, create_id: str) -> None:
+        """Terminate the sandbox a failed create request may have left behind, found by its create label."""
+        with move_on_after(self._operations.close_timeout_s, shield=True) as scope:
+            manager = None
+            try:
+                SandboxManager, SandboxFilter = _require_opensandbox_manager()
+                manager = await SandboxManager.create(self._connection_config())
+                page = await manager.list_sandbox_infos(SandboxFilter(metadata={create_key: create_id}))
+                for info in page.sandbox_infos:
+                    # Match exactly, so a server that ignores the filter cannot cost other sandboxes.
+                    if (info.metadata or {}).get(create_key) != create_id:
+                        continue
+                    try:
+                        await manager.kill_sandbox(info.id)
+                    except Exception as e:
+                        if not _is_missing_sandbox_delete_error(e):
+                            raise
+            except Exception as e:
+                LOGGER.warning(
+                    "Failed to terminate the sandbox of a failed OpenSandbox create; %s=%s; error=%r",
+                    create_key,
+                    create_id,
+                    e,
+                )
+            finally:
+                if manager is not None:
+                    await manager.close()
+        if scope.cancelled_caught:
+            LOGGER.warning(
+                "Timed out terminating the sandbox of a failed OpenSandbox create; %s=%s", create_key, create_id
             )
 
     async def _connect_after_create(self, handle: SandboxHandle, spec: SandboxSpec) -> SandboxHandle:
@@ -1498,10 +1546,12 @@ class OpenSandboxProvider:
             raise ValueError("create.renew_interval_s requires a longer, explicit sandbox ttl_s")
         Sandbox, _, _, _, _ = _require_opensandbox_sdk()
         options = OpenSandboxProviderOptions.from_mapping(spec.provider_options)
+        create_key = f"{self._attribution.key_prefix}{CREATE_KEY}"
+        create_id = uuid4().hex
 
         kwargs: dict[str, Any] = {
             "env": spec.env,
-            "metadata": spec.metadata,
+            "metadata": {**spec.metadata, create_key: create_id},
             "resource": _resource_map(spec.resources),
             "extensions": self._resolve_extensions(options.extensions),
             "connection_config": self._connection_config(request_timeout_s=self._create.request_timeout_s),
@@ -1540,13 +1590,19 @@ class OpenSandboxProvider:
         sandbox_id: str | None = None
         sandbox: Any | None = None
         try:
-            if timeout_s is None:
-                sandbox = await Sandbox.create(**kwargs)
-            else:
-                sandbox = await asyncio.wait_for(
-                    Sandbox.create(**kwargs),
-                    timeout=timeout_s,
-                )
+            try:
+                if timeout_s is None:
+                    sandbox = await Sandbox.create(**kwargs)
+                else:
+                    sandbox = await asyncio.wait_for(
+                        Sandbox.create(**kwargs),
+                        timeout=timeout_s,
+                    )
+            except BaseException:
+                # The server answers the create request only once the sandbox is running, so a
+                # create cancelled or timed out mid-request leaves one that no handle points to.
+                await self._kill_unreturned_create(create_key, create_id)
+                raise
             if sandbox is None:
                 raise RuntimeError("OpenSandbox SDK create returned no sandbox handle")
             sandbox_id = str(sandbox.id)
@@ -1569,7 +1625,7 @@ class OpenSandboxProvider:
             if self._create.skip_health_check:
                 handle = await self._connect_after_create(created_handle, spec)
             await self._verify_created_handle(handle)
-        except Exception:
+        except BaseException:
             await self._cleanup_failed_create_handle(created_handle)
             raise
         if self._create.renew_interval_s is not None:

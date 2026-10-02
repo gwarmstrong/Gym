@@ -25,6 +25,8 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, TypeVar
 
+from anyio import move_on_after
+
 from nemo_gym.sandbox.providers import (
     ConnectableProvider,
     SandboxEndpoint,
@@ -57,6 +59,8 @@ SYNC_OPERATION_TIMEOUT_S = 3600.0
 # Matches the providers' non-process exec sentinel (see docker provider).
 SANDBOX_PTY_RUNTIME_RETURN_CODE = 125
 SYNC_LOOP_CLOSE_TIMEOUT_S = 5.0
+# Twice the longest provider close timeout (60 s): stop only gives up on a close that is hung.
+SANDBOX_STOP_TIMEOUT_S = 120.0
 
 
 def _pty_timeout_result(command: str, timeout_s: float | int | None, *, reusable: bool) -> SandboxExecResult:
@@ -628,6 +632,22 @@ class AsyncSandbox:
         await provider.resume(handle)
 
     async def stop(self) -> None:
+        """Stop the sandbox and release its client.
+
+        Shielded from cancellation: stop is how a cancelled request, or a start whose setup was
+        cancelled, cleans up, and an anyio cancellation is re-delivered at every await until the
+        handler exits, so an unshielded stop would be cancelled too and leave the sandbox running
+        until its TTL. Bounded by ``SANDBOX_STOP_TIMEOUT_S`` so a hung provider cannot hang every
+        cancelled caller: past it, raises ``TimeoutError`` and leaves the sandbox stoppable again.
+        """
+        with move_on_after(SANDBOX_STOP_TIMEOUT_S, shield=True) as scope:
+            await self._stop()
+        if scope.cancelled_caught:
+            raise TimeoutError(
+                f"Sandbox {_sandbox_id(self._handle)!r} did not stop within {SANDBOX_STOP_TIMEOUT_S:g}s"
+            )
+
+    async def _stop(self) -> None:
         if self._closed:
             return
         # A failed remote stop is retryable. Do not close its client or mark the

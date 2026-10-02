@@ -23,8 +23,10 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+import anyio
 import pytest
 
+import nemo_gym.sandbox.api as sandbox_api
 import nemo_gym.sandbox.providers.registry as provider_registry
 from nemo_gym.sandbox import (
     AsyncSandbox,
@@ -503,6 +505,62 @@ async def test_start_with_setup_stops_the_sandbox_when_setup_fails() -> None:
     handle = provider.created_handles[0]
     assert provider.exec_calls[0]["command"] == "apt-get update"
     assert provider.closed == [handle]
+    assert await sandbox.status() == SandboxStatus.STOPPED
+
+
+@pytest.mark.parametrize("stop_path", ["setup", "async_with"])
+async def test_a_cancelled_caller_still_stops_the_sandbox(stop_path: str) -> None:
+    """A disconnected request cancels its handler with an anyio scope, re-delivered at every await."""
+    provider = FakeSandboxProvider()
+    stopped: list[SandboxHandle] = []
+
+    async def close(handle: SandboxHandle) -> None:
+        await asyncio.sleep(0)  # where an unshielded stop would be cancelled
+        stopped.append(handle)
+
+    provider.close = close
+    sandbox = AsyncSandbox(provider)
+    in_use = anyio.Event()
+
+    async def use() -> None:
+        if stop_path == "setup":
+
+            async def setup(_started: AsyncSandbox) -> None:
+                in_use.set()
+                await anyio.sleep_forever()
+
+            await sandbox.start_with_setup(SandboxSpec(image="image:tag"), setup)
+        else:
+            async with await sandbox.start(SandboxSpec(image="image:tag")):
+                in_use.set()
+                await anyio.sleep_forever()
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(use)
+        await in_use.wait()
+        task_group.cancel_scope.cancel()
+
+    assert stopped == provider.created_handles
+    assert await sandbox.status() == SandboxStatus.STOPPED
+
+
+async def test_a_hung_stop_times_out_and_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stop shield must not let one hung provider close hang every cancelled caller."""
+    monkeypatch.setattr(sandbox_api, "SANDBOX_STOP_TIMEOUT_S", 0.05)
+    provider = FakeSandboxProvider()
+    sandbox = await AsyncSandbox(provider).start(SandboxSpec(image="image:tag"))
+    hung_close = provider.close
+
+    async def hang(_handle: SandboxHandle) -> None:
+        await anyio.sleep_forever()
+
+    provider.close = hang
+    with pytest.raises(TimeoutError, match="'fake-1' did not stop within 0.05s"):
+        await asyncio.wait_for(sandbox.stop(), timeout=5)
+
+    provider.close = hung_close
+    await sandbox.stop()
+    assert provider.closed == provider.created_handles
     assert await sandbox.status() == SandboxStatus.STOPPED
 
 

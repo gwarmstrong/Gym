@@ -17,13 +17,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from nemo_gym.sandbox import SandboxExecResult, SandboxHandle
+from nemo_gym.sandbox import AsyncSandbox, SandboxExecResult, SandboxHandle, SandboxSpec
 from nemo_gym.sandbox.utils import CPU_CAP_ENV_VARS
-from nemo_gym.server_utils import ServerClient
+from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
 from resources_servers.swebench.app import (
     DockerContainer,
     SwebenchResourcesServer,
@@ -274,3 +275,57 @@ class TestApp:
 
         assert observation.outcome == "sandbox_error"
         assert observation.error_type == "RuntimeError"
+
+
+class BlockingSetupProvider:
+    """A provider whose anti-cheat exec never returns, or fails, and whose stop has a checkpoint."""
+
+    name = "blocking-setup"
+
+    def __init__(self, exec_error: Exception | None) -> None:
+        self.exec_error = exec_error
+        self.exec_started = anyio.Event()
+        self.closed: list[str] = []
+
+    async def create(self, spec: SandboxSpec) -> SandboxHandle:
+        return SandboxHandle(sandbox_id="seeded", provider_name=self.name, raw=None)
+
+    async def exec(self, handle: SandboxHandle, command: str, **_kwargs: Any) -> SandboxExecResult:
+        self.exec_started.set()
+        if self.exec_error is not None:
+            raise self.exec_error
+        await anyio.sleep_forever()
+
+    async def close(self, handle: SandboxHandle) -> None:
+        await anyio.sleep(0)  # where an unshielded stop would be cancelled
+        self.closed.append(handle.sandbox_id)
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "error"])
+async def test_seed_session_stops_its_sandbox_when_setup_does_not_finish(interruption: str) -> None:
+    """verify() stops the seeded sandbox; a seed_session cancelled or failing during setup never gets there."""
+    provider = BlockingSetupProvider(RuntimeError("exec failed") if interruption == "error" else None)
+    sandbox = await AsyncSandbox(provider).start(SandboxSpec(image="image:tag"))
+    config = SwebenchResourcesServerConfig(
+        host="0.0.0.0", port=8080, entrypoint="", name="", sandbox_provider="test", sandbox_config={}
+    )
+    server = SwebenchResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
+    server._make_test_spec = MagicMock(return_value=SimpleNamespace(instance_id="astropy__astropy-12907"))
+    server._create_sandbox = AsyncMock(return_value=sandbox)
+    request = SimpleNamespace(session={SESSION_ID_KEY: "session-1"})
+
+    if interruption == "error":
+        with pytest.raises(RuntimeError, match="exec failed"):
+            await server.seed_session(request, MagicMock())
+    else:
+        # Cancelled the way the disconnect middleware cancels a handler: re-delivered at every await.
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(server.seed_session, request, MagicMock())
+            await provider.exec_started.wait()
+            task_group.cancel_scope.cancel()
+
+    assert provider.closed == ["seeded"]
+    assert server._session_id_to_sandbox == {}

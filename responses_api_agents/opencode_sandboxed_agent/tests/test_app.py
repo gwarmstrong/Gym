@@ -724,6 +724,28 @@ class TestOpenCodeSandboxedAgent:
 
         assert stopped == ["seeded-sandbox"], "the seeded sandbox was left running"
 
+    async def test_server_shutdown_stops_every_in_flight_sandbox(self) -> None:
+        """The process exits right after its lifespan shutdown, taking in-flight rollouts' own stops with it."""
+        server = OpenCodeSandboxedAgent(config=self._create_config(), server_client=MagicMock(spec=ServerClient))
+        stopped: list[str] = []
+
+        class InFlight:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def stop(self) -> None:
+                await anyio.sleep(0)
+                stopped.append(self.name)
+
+        server._sandbox_id_to_sandbox = {"session-1": InFlight("one"), "session-2": InFlight("two")}
+        app = server.setup_webserver()
+
+        async with app.router.lifespan_context(app):
+            pass
+
+        assert sorted(stopped) == ["one", "two"]
+        assert server._sandbox_id_to_sandbox == {}
+
 
 class TestBenchmarkLifecycle:
     _create_config = TestOpenCodeSandboxedAgent._create_config

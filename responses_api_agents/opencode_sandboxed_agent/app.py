@@ -17,6 +17,7 @@ import json
 import sqlite3
 import sys
 from asyncio import Semaphore
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 from shlex import quote
@@ -25,8 +26,8 @@ from traceback import format_exc
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from anyio import CancelScope, move_on_after
-from fastapi import Request
+from anyio import CancelScope, create_task_group, move_on_after
+from fastapi import FastAPI, Request
 from openai.types.responses import ResponseInputTextParam
 from pydantic import ConfigDict, Field
 
@@ -86,6 +87,8 @@ from responses_api_agents.opencode_agent.observability import append_opencode_tu
 
 # A healthy reconnect takes seconds; this only stops a broken one from holding a cancelled handler.
 SEEDED_SANDBOX_STOP_TIMEOUT_S = 60
+# An OpenSandbox stop takes ~0.1 s; the gym CLI kills a server 1 s after asking it to stop anyway.
+SHUTDOWN_SANDBOX_STOP_TIMEOUT_S = 10
 
 
 def _load_json(value: Any) -> dict[str, Any]:
@@ -492,6 +495,41 @@ class OpenCodeSandboxedAgent(SimpleResponsesAPIAgent):
         self._sem = Semaphore(self.config.concurrency)
         self._sandbox_id_to_sandbox: Dict[str, AsyncSandbox] = dict()
         self._sandbox_id_to_run_result: Dict[str, Dict[str, Any]] = dict()
+
+    def setup_webserver(self) -> FastAPI:
+        app = super().setup_webserver()
+        parent_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            try:
+                async with parent_lifespan(app) as state:
+                    yield state
+            finally:
+                await self._stop_all_sandboxes()
+
+        app.router.lifespan_context = lifespan
+        return app
+
+    async def _stop_all_sandboxes(self) -> None:
+        """Stop every in-flight rollout's sandbox when the server shuts down.
+
+        On shutdown uvicorn cancels in-flight requests, and the event loop's teardown then cancels
+        them again, which no shield survives, so their own stops in `_run` die with the process.
+        Lifespan shutdown runs before that teardown. Bounded, since stopping is best effort here.
+        """
+
+        async def stop(session_key: str, sandbox: AsyncSandbox) -> None:
+            try:
+                await sandbox.stop()
+            except Exception:
+                print("Failed to stop sandbox", format_exc(), file=sys.stderr)
+            self._sandbox_id_to_sandbox.pop(session_key, None)
+
+        with move_on_after(SHUTDOWN_SANDBOX_STOP_TIMEOUT_S):
+            async with create_task_group() as task_group:
+                for session_key, sandbox in list(self._sandbox_id_to_sandbox.items()):
+                    task_group.start_soon(stop, session_key, sandbox)
 
     async def _start_sandbox(self, sandbox_id: Optional[str] = None, workdir: Optional[str] = None) -> AsyncSandbox:
         global_config_dict = get_global_config_dict()

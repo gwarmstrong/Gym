@@ -22,14 +22,18 @@
 # as at its time limit and the receipt records timed_out. If it appears before launch, the harness
 # never starts. The supervisor never deletes it.
 #
+# COMMAND comes after -- or, with --command-file, from a file holding its arguments, each followed by
+# a NUL, which keeps the command off the supervisor's command line. A missing or empty file ends the
+# launch with a receipt; nothing is launched.
+#
 # usage: process_supervisor.sh --timeout SECONDS --cleanup-timeout SECONDS --receipt PATH --stop-file PATH
-#        [--expire-file PATH] -- COMMAND...
+#        [--expire-file PATH] {-- COMMAND... | --command-file PATH}
 
 # An inherited BASH_ENV or SHELLOPTS must not turn an expected failure into a missing receipt.
 set +o errexit +o nounset +o pipefail
 
 usage() {
-    echo "usage: process_supervisor.sh --timeout S --cleanup-timeout S --receipt PATH --stop-file PATH [--expire-file PATH] -- COMMAND..." >&2
+    echo "usage: process_supervisor.sh --timeout S --cleanup-timeout S --receipt PATH --stop-file PATH [--expire-file PATH] {-- COMMAND... | --command-file PATH}" >&2
     exit 2
 }
 
@@ -201,13 +205,20 @@ while (($#)) && [[ $1 != -- ]]; do
     --receipt) receipt=$2 ;;
     --stop-file) stop_file=$2 ;;
     --expire-file) expire_file=$2 ;;
+    --command-file) command_file=$2 ;;
     *) echo "unexpected argument: $1" >&2; exit 2 ;;
     esac
     shift 2
 done
-[[ $1 == -- ]] || usage
-shift
-[[ -n ${timeout-} && -n ${cleanup-} && -n ${receipt-} && -n ${stop_file-} && $# -gt 0 ]] || usage
+if [[ -n ${command_file-} ]]; then
+    # The command comes from the file only.
+    (($# == 0)) || [[ $1 == -- && $# -eq 1 ]] || usage
+else
+    [[ $1 == -- ]] || usage
+    shift
+    (($# > 0)) || usage
+fi
+[[ -n ${timeout-} && -n ${cleanup-} && -n ${receipt-} && -n ${stop_file-} ]] || usage
 
 # Leave the provider's process group, so that a KILL sent to it cannot end the supervisor before
 # the receipt. This shell stays behind to pass on TERM and the exit status.
@@ -243,6 +254,15 @@ fi
 started=${fields[19]}
 identity=$$.$started
 marker=NEMO_GYM_SUPERVISOR=$identity
+if [[ -n ${command_file-} ]]; then
+    harness_argv=()
+    { while IFS= read -r -d '' argument; do harness_argv+=("$argument"); done; } 2>/dev/null <"$command_file"
+    if ((${#harness_argv[@]} == 0)); then
+        write_receipt true '"Harness launch failed: the command file is missing, unreadable or empty"' # Nothing was launched.
+        exit 1
+    fi
+    set -- "${harness_argv[@]}"
+fi
 
 # Job control gives the harness its own process group.
 set -m

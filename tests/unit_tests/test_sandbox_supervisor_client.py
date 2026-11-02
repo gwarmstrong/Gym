@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -167,7 +168,8 @@ async def test_launch_supervises_harness_and_shares_its_output_log(session, tmp_
     command = supervised_launch_command(
         session_dir=str(session_dir),
         command=[
-            sys.executable,
+            # The base interpreter: a venv one would get a runner link in the developer's venv.
+            os.path.realpath(sys._base_executable),
             "-c",
             "import sys; print(sys.argv[1]); print('stderr', file=sys.stderr)",
             "$(literal)",

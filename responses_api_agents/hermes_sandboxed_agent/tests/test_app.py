@@ -251,8 +251,15 @@ async def test_runner_request_has_no_gold_and_runs_outside_repo(agent, monkeypat
         "runner.py",
         "process_supervisor.sh",
     }
+    # The runner goes up without its .py suffix, and its argv reaches the supervisor through a file.
+    assert {call.args[1].rsplit("/", 1)[-1] for call in sandbox.upload.await_args_list} == {
+        "request.json",
+        "runner",
+        "process_supervisor.sh",
+    }
     command_args = shlex.split(command)
     assert any(arg.endswith("/process_supervisor.sh") for arg in command_args)
+    assert command_args[command_args.index("--command-file") + 1].endswith("/harness.argv")
     assert float(command_args[command_args.index("--timeout") + 1]) == agent.config.sandbox_timeout
     assert launch.kwargs["timeout_s"] > agent.config.sandbox_timeout + 3 * DEFAULT_CLEANUP_TIMEOUT
     assert launch.kwargs["cwd"].startswith("/tmp/nemo-hermes-")

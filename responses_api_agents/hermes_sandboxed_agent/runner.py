@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Standalone runner for NousResearch/hermes-agent. No Gym imports.
 
-Launch with the dedicated runtime's ``python -I runner.py request.json`` from
-outside the task repository. TERMINAL_CWD independently selects the tool cwd.
+Uploaded without its ``.py`` suffix and launched with the dedicated runtime's
+``python -I runner request.json`` from outside the task repository, under the shared
+supervisor. TERMINAL_CWD independently selects the tool cwd.
 """
 
 import json

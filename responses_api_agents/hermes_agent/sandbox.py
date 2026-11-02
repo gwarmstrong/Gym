@@ -45,7 +45,9 @@ _HERMES_REQUIREMENT, _HERMES_RUNTIME_KEY = _sandbox_hermes_install()
 _SANDBOX_RUNTIME_DIR = f"/tmp/nemo-gym-hermes-runtime-{_HERMES_RUNTIME_KEY}"
 _SANDBOX_UV = f"{_SANDBOX_RUNTIME_DIR}/uv"
 _SANDBOX_PYTHON = f"{_SANDBOX_RUNTIME_DIR}/venv/bin/python"
-_SANDBOX_RUNNER = f"{_SANDBOX_RUNTIME_DIR}/sandbox_runner.py"
+# Without a .py suffix, which python-matching kills in the task (`pkill -f '\.py'`) would match. The runner imports its
+# sibling modules from its own directory, so they keep theirs.
+_SANDBOX_RUNNER = f"{_SANDBOX_RUNTIME_DIR}/sandbox_runner"
 _SANDBOX_OBSERVER = f"{_SANDBOX_RUNTIME_DIR}/sandbox_observer.py"
 _SANDBOX_MODEL_KWARGS = f"{_SANDBOX_RUNTIME_DIR}/model_kwargs.py"
 

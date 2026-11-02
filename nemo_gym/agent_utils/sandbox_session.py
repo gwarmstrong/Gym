@@ -59,10 +59,12 @@ def _reuse_or_start[T](
 class SandboxCommand:
     """Harness argv, run under the bash process supervisor.
 
-    ``stdlib_runner`` declares a Python runner that needs nothing beyond the standard library.
-    Its argv, which must start with the interpreter, then runs under a neutral process name so
-    that ``pkill python3`` in the task cannot stop it. The renamed interpreter is the base
-    interpreter, outside any virtual environment.
+    A Python runner runs under a neutral process name so that ``pkill python3`` in the task
+    cannot stop it. An argv that starts with an interpreter named by path (the adapter's own
+    runtime) gets it without opting in, and keeps that interpreter's virtual environment.
+    ``stdlib_runner`` declares a runner, started by an interpreter found on PATH, that needs
+    nothing beyond the standard library: its renamed interpreter is the base interpreter,
+    outside any virtual environment.
     """
 
     argv: list[str]

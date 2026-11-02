@@ -11,7 +11,8 @@ Session control files (all paths are relative to session_dir):
 Filename              Writer               When
 ===================== ==================== ===========================================
 process_supervisor.sh Session              Uploaded before launch
-bin/gym-runner        Launch shell         Interpreter link for a standard-library runner
+bin/gym-runner        Launch shell         Interpreter link for a Python runner outside a venv
+harness.argv          Launch shell         The harness argv, NUL-separated, before claiming launch
 launch.claim          Launch or stop shell Atomically claims launch or fences it
 supervisor.pid        Launch shell         After claiming launch, before exec (see below)
 stop.request          Stop shell           Polled by the supervisor to stop the harness
@@ -23,11 +24,14 @@ output.log            Launch shell         Captures supervisor and harness diagn
 Agents in the task sandbox often clean up with ``pkill -f python3``, ``pkill python3`` or
 ``killall python3``. These must not stop the supervisor or a runner, which would end the
 harness. The supervisor and the shared harness runner are bash scripts, so their names
-never mention python. A standard-library Python runner that opts in (Codex) runs under an
-interpreter link with a neutral name, from a file without a ``.py`` suffix, so neither its
-process name nor the supervisor's command line mentions python; a harness argv that keeps
-its own python (Hermes, Stirrup) still appears in the supervisor's command line. Gym stops
-the supervisor through the stop file, which does not depend on these names.
+never mention python, and the supervisor reads the harness argv from ``harness.argv``, so
+its command line names neither the interpreter nor the harness. A Python runner runs under
+an interpreter link with a neutral name, from a file without a ``.py`` suffix: a
+standard-library runner that opts in (Codex) and a runner whose interpreter the adapter
+names by path (Hermes, Stirrup, NOOA). The link for an interpreter in a virtual environment
+goes in that environment's ``bin/`` (``<venv>/bin/gym-runner``), where CPython still finds
+``pyvenv.cfg``; any other runner's link goes in the session's ``bin/``. Gym stops the
+supervisor through the stop file, which does not depend on these names.
 
 ``supervisor.pid`` holds the PID that executes the supervisor. When the provider did not
 make the launch shell a process group leader, that process starts the supervisor in a new
@@ -36,6 +40,7 @@ group, passes TERM on to it and exits with its status.
 
 import json
 import logging
+import posixpath
 from pathlib import Path
 from shlex import join, quote
 from typing import TypedDict
@@ -50,6 +55,7 @@ from nemo_gym.sandbox.utils import read_text
 SUPERVISOR_FILE = "process_supervisor.sh"
 SUPERVISOR_SCRIPT = Path(__file__).with_name(SUPERVISOR_FILE)
 RUNNER_INTERPRETER = "bin/gym-runner"
+HARNESS_COMMAND_FILE = "harness.argv"
 LAUNCH_CLAIM_FILE = "launch.claim"
 SUPERVISOR_PID_FILE = "supervisor.pid"
 STOP_REQUEST_FILE = "stop.request"
@@ -93,6 +99,11 @@ def exec_timeout(*, timeout: float, cleanup_timeout: float = DEFAULT_CLEANUP_TIM
 _CLEANUP_RECEIPT = TypeAdapter(CleanupReceipt)
 # The interpreter binary itself, past virtual-environment links and launcher shims.
 _RESOLVE_INTERPRETER = 'import os; print(os.readlink("/proc/self/exe"))'
+# The interpreter's virtual environment, or an empty line outside one.
+_VIRTUAL_ENVIRONMENT = 'import sys; print(sys.prefix if sys.prefix != sys.base_prefix else "")'
+# What a link in that environment's bin/ runs: its base interpreter. A link to a copied venv binary does not start on
+# CPython 3.13.
+_BASE_INTERPRETER = "import os, sys; print(os.path.realpath(sys._base_executable))"
 LOG = logging.getLogger(__name__)
 
 
@@ -156,6 +167,15 @@ def check_stdlib_runner(command: list[str], *, stdlib_runner: bool) -> None:
         raise ValueError(f"stdlib_runner requires a harness argv that starts with its interpreter; got {command!r}")
 
 
+def runtime_python(command: list[str]) -> bool:
+    """Whether the harness argv starts with a Python interpreter the adapter names by path.
+
+    Such an interpreter is the adapter's own runtime, never one the task put on PATH, so its
+    runner gets a neutral-named link without opting in.
+    """
+    return len(command) >= 2 and posixpath.isabs(command[0]) and "python" in posixpath.basename(command[0])
+
+
 def supervised_launch_command(
     *,
     session_dir: str,
@@ -174,37 +194,64 @@ def supervised_launch_command(
     supervisor through the stop file, not a signal, so the harness keeps the default
     TERM disposition.
 
-    With ``stdlib_runner``, the harness argv starts with a Python interpreter, and the
-    runner runs through ``bin/gym-runner``, a link to the binary behind that interpreter,
-    so that python-matching kills in the task skip it. The link resolves a virtual
-    environment to its base interpreter, so only standard-library runners may opt in.
-    When the link cannot be made, the argv runs unchanged.
+    The supervisor reads the harness argv from ``harness.argv``, so its own command line
+    names neither the interpreter nor the harness. A Python runner runs through a link
+    named ``gym-runner``, so that python-matching kills in the task skip it:
+
+    - With ``stdlib_runner``, the link is ``bin/gym-runner`` in the session, to the binary
+      behind the interpreter. That resolves a virtual environment to its base interpreter,
+      so only standard-library runners may opt in.
+    - A runner whose interpreter the adapter names by path (``runtime_python``) needs no
+      opt-in. For an interpreter in a virtual environment, the link is
+      ``<venv>/bin/gym-runner``, to the base interpreter: CPython looks for ``pyvenv.cfg``
+      next to the link, so the runner keeps the environment. The link is replaced atomically,
+      since sessions share the environment. Any other such interpreter, a standalone runtime,
+      gets the session link to the binary behind it, past any wrapper script, and CPython
+      finds that runtime's prefix there.
+
+    When a link cannot be made, the argv runs unchanged.
     """
     check_stdlib_runner(command, stdlib_runner=stdlib_runner)
     supervisor = quote(f"{session_dir}/{SUPERVISOR_FILE}")
     claim_path = quote(f"{session_dir}/{LAUNCH_CLAIM_FILE}")
+    bin_dir = quote(f"{session_dir}/bin")
+    runner_link = quote(f"{session_dir}/{RUNNER_INTERPRETER}")
+    # Create only bin, so a launch delayed past close cannot recreate the session directory.
+    session_link = f'{{ [ -d {bin_dir} ] || mkdir {bin_dir}; }} && ln -sfn "$real" {runner_link} && run={runner_link}'
     harness = join(command)
     runner = ""
-    if stdlib_runner:
+    if stdlib_runner or runtime_python(command):
         python = quote(command[0])
-        bin_dir = quote(f"{session_dir}/bin")
-        runner_link = quote(f"{session_dir}/{RUNNER_INTERPRETER}")
-        # Create only bin, so a launch delayed past close cannot recreate the session directory.
-        runner = (
-            f"run={python}; real=$({python} -I -c {quote(_RESOLVE_INTERPRETER)} 2>/dev/null) && "
-            f'{{ [ -d {bin_dir} ] || mkdir {bin_dir}; }} && ln -sfn "$real" {runner_link} && run={runner_link}; '
-        )
         harness = f'"$run" {join(command[1:])}'
+        if stdlib_runner:
+            runner = (
+                f"run={python}; real=$({python} -I -c {quote(_RESOLVE_INTERPRETER)} 2>/dev/null) && {session_link}; "
+            )
+        else:
+            venv_link = '"$venv/bin/gym-runner"'
+            runner = (
+                f"run={python}; venv=$({python} -I -c {quote(_VIRTUAL_ENVIRONMENT)} 2>/dev/null) || venv=; "
+                f'if [ -n "$venv" ] && [ ! -d {venv_link} ]; then '
+                f"real=$({python} -I -c {quote(_BASE_INTERPRETER)} 2>/dev/null) && "
+                f'ln -sfn "$real" "$venv/bin/gym-runner.$$" 2>/dev/null && '
+                f'{{ mv -f "$venv/bin/gym-runner.$$" {venv_link} 2>/dev/null || '
+                f'{{ rm -f "$venv/bin/gym-runner.$$"; false; }}; }} && run={venv_link}; '
+                f"else real=$({python} -I -c {quote(_RESOLVE_INTERPRETER)} 2>/dev/null) && {session_link}; fi; "
+            )
+    command_file = quote(f"{session_dir}/{HARNESS_COMMAND_FILE}")
     return (
         f"[ -d {quote(session_dir)} ] && [ ! -L {claim_path} ] || exit 0; "
         f"bash -n {supervisor} || exit $?; "
-        f"{runner}ln -s launch {claim_path} 2>/dev/null || exit 0; "
+        # Each argument followed by a NUL, so any argv round-trips. A missing or empty file ends the launch with a
+        # receipt, so a failed write needs no check here.
+        f"{runner}printf '%s\\0' {harness} >{command_file} 2>/dev/null; "
+        f"ln -s launch {claim_path} 2>/dev/null || exit 0; "
         f"echo $$ > {quote(f'{session_dir}/{SUPERVISOR_PID_FILE}')} && "
         f"exec bash {supervisor} "
         f"--timeout {_seconds(timeout)} --cleanup-timeout {_seconds(cleanup_timeout)} "
         f"--stop-file {quote(f'{session_dir}/{STOP_REQUEST_FILE}')} "
         f"--expire-file {quote(f'{session_dir}/{EXPIRE_REQUEST_FILE}')} "
-        f"--receipt {quote(f'{session_dir}/{CLEANUP_RECEIPT_FILE}')} -- {harness} "
+        f"--receipt {quote(f'{session_dir}/{CLEANUP_RECEIPT_FILE}')} --command-file {command_file} "
         f">{quote(f'{session_dir}/{OUTPUT_LOG_FILE}')} 2>&1"
     )
 

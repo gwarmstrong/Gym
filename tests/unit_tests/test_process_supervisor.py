@@ -70,6 +70,51 @@ def test_malformed_arguments_neither_hang_nor_run_part_of_the_command(tmp_path: 
     assert not (tmp_path / "ran").exists() and not (tmp_path / "cleanup.json").exists()
 
 
+def _supervise_from_file(tmp_path: Path, argv: list[str] | None, *after: str) -> subprocess.CompletedProcess[str]:
+    """Run the supervisor with its command in a NUL-separated file (None: no file)."""
+    command_file = tmp_path / "harness.argv"
+    if argv is not None:
+        command_file.write_bytes(b"".join(argument.encode() + b"\0" for argument in argv))
+    options = ["--timeout", "10", "--cleanup-timeout", "0.5", "--receipt", str(tmp_path / "cleanup.json")]
+    options += ["--stop-file", str(tmp_path / "stop.request"), "--command-file", str(command_file)]
+    return subprocess.run(["bash", SUPERVISOR, *options, *after], capture_output=True, text=True, timeout=20)
+
+
+@linux_only
+@pytest.mark.parametrize("separator", [[], ["--"]])
+def test_the_command_file_round_trips_any_argv(tmp_path: Path, separator: list[str]) -> None:
+    written = tmp_path / "arguments"
+    arguments = ["a b", "", "$(touch unintended)", "-x", "line\nbreak", "back\\slash"]
+    script = f'printf "%s\\n" "$@" > {written}'
+    result = _supervise_from_file(tmp_path, ["sh", "-c", script, "sh", *arguments], *separator)
+    assert result.returncode == 0, result.stderr
+    assert _receipt(tmp_path) == {"cleanup_confirmed": True, "return_code": 0, "error": None, "timed_out": False}
+    assert written.read_text() == "".join(f"{argument}\n" for argument in arguments)
+    assert not (tmp_path / "unintended").exists()
+
+
+@linux_only
+@pytest.mark.parametrize("argv", [None, []])
+def test_a_missing_or_empty_command_file_ends_the_launch_with_a_receipt(
+    tmp_path: Path, argv: list[str] | None
+) -> None:
+    result = _supervise_from_file(tmp_path, argv)
+    assert result.returncode == 1
+    assert _receipt(tmp_path) == {
+        "cleanup_confirmed": True,
+        "return_code": None,
+        "error": "Harness launch failed: the command file is missing, unreadable or empty",
+        "timed_out": False,
+    }
+
+
+def test_a_command_file_excludes_a_command_after_the_separator(tmp_path: Path) -> None:
+    result = _supervise_from_file(tmp_path, ["true"], "--", "touch", str(tmp_path / "ran"))
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+    assert not (tmp_path / "ran").exists() and not (tmp_path / "cleanup.json").exists()
+
+
 @linux_only
 def test_process_names_are_never_evaluated(tmp_path: Path) -> None:
     # The kernel prints names unescaped. A bystander named like an arithmetic expression must not run

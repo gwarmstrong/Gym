@@ -20,6 +20,7 @@ from nemo_gym.agent_utils.supervisor_client import (
     SUPERVISOR_FILE,
     SUPERVISOR_SCRIPT,
     exec_timeout,
+    supervised_launch_command,
 )
 from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, SimpleResponsesAPIAgent
 from nemo_gym.client import get_response_json, raise_for_status
@@ -245,15 +246,18 @@ class HermesSandboxedAgent(SimpleResponsesAPIAgent):
             # Only model input goes into the task container. Benchmark gold/test metadata stays outside.
             (local / "request.json").write_text(json.dumps(params))
             await sandbox.upload(local / "request.json", f"{remote}/request.json")
-            await sandbox.upload(Path(__file__).with_name("runner.py"), f"{remote}/runner.py")
+            # Without a .py suffix, which python-matching kills in the task (`pkill -f '\.py'`) would match.
+            await sandbox.upload(Path(__file__).with_name("runner.py"), f"{remote}/runner")
             await sandbox.upload(SUPERVISOR_SCRIPT, f"{remote}/{SUPERVISOR_FILE}")
             launched = True
             executed = await sandbox.exec(
-                f"bash {quote(f'{remote}/{SUPERVISOR_FILE}')} "
-                f"--timeout {self.config.sandbox_timeout} --cleanup-timeout {DEFAULT_CLEANUP_TIMEOUT} "
-                f"--receipt {quote(remote + '/cleanup.json')} --stop-file {quote(remote + '/stop.request')} -- "
-                f"{quote(self.config.runtime_python)} -I {quote(remote + '/runner.py')} {quote(remote + '/request.json')} "
-                f">{quote(remote + '/output.log')} 2>&1",
+                # The shared launch: fenced, with the runner under a neutral-named interpreter link.
+                supervised_launch_command(
+                    session_dir=remote,
+                    command=[self.config.runtime_python, "-I", f"{remote}/runner", f"{remote}/request.json"],
+                    timeout=self.config.sandbox_timeout,
+                    cleanup_timeout=DEFAULT_CLEANUP_TIMEOUT,
+                ),
                 cwd=remote,
                 # The runner owns the model budget; leave time for process cleanup.
                 timeout_s=exec_timeout(timeout=self.config.sandbox_timeout),

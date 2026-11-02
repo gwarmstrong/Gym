@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -998,9 +999,11 @@ async def test_expire_reaches_harnesses_that_hold_every_local_exec_slot(tmp_path
         )
         started = workdir / "started"
         worker = f"import pathlib,time; pathlib.Path({str(started)!r}).touch(); time.sleep(60)"
+        # The base interpreter: a venv one would get a runner link in the developer's venv.
+        python = os.path.realpath(sys._base_executable)
         activation = asyncio.create_task(
             session.execute(
-                stage_activation=AsyncMock(return_value=SandboxCommand(argv=[sys.executable, "-c", worker])),
+                stage_activation=AsyncMock(return_value=SandboxCommand(argv=[python, "-c", worker])),
                 collect=AsyncMock(return_value="partial transcript"),
                 timeout=60,
                 close_timeout=5,

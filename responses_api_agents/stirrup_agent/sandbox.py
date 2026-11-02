@@ -30,6 +30,9 @@ SANDBOX_PYTHON = f"{RUNTIME_DIR}/venv/bin/python"
 _PACKAGE_DIR = f"{RUNTIME_DIR}/harness/responses_api_agents/stirrup_agent"
 # The runner and the modules it imports; the rest of this package needs Gym, which the sandbox lacks.
 HARNESS_FILES = ("nemo_agent.py", "nemo_client.py", "stirrup_utils.py", "sandbox_runner.py")
+# The runner is uploaded without its .py suffix, which python-matching kills in the task (`pkill -f '\.py'`) would
+# match. It finds its package from its own path, so the modules it imports keep theirs.
+_SANDBOX_RUNNER = f"{_PACKAGE_DIR}/sandbox_runner"
 
 
 @dataclass
@@ -51,7 +54,8 @@ class StirrupSessionState(AgentSessionState):
         if not await self._runtime_installed():
             await self._install_runtime(timeout)
         for name in HARNESS_FILES:
-            await sandbox.upload(Path(__file__).with_name(name), f"{_PACKAGE_DIR}/{name}")
+            target = _SANDBOX_RUNNER if name == "sandbox_runner.py" else f"{_PACKAGE_DIR}/{name}"
+            await sandbox.upload(Path(__file__).with_name(name), target)
         for package in (_PACKAGE_DIR, str(Path(_PACKAGE_DIR).parent)):
             await upload_text(sandbox, path=f"{package}/__init__.py", text="")
 
@@ -84,7 +88,7 @@ class StirrupSessionState(AgentSessionState):
         async def stage() -> SandboxCommand:
             await upload_text(self.session.sandbox, path=input_path, text=json.dumps(payload))
             return SandboxCommand(
-                argv=[SANDBOX_PYTHON, f"{_PACKAGE_DIR}/sandbox_runner.py", input_path, output_path],
+                argv=[SANDBOX_PYTHON, _SANDBOX_RUNNER, input_path, output_path],
             )
 
         async def collect() -> dict[str, Any]:

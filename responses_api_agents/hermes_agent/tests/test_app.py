@@ -183,6 +183,12 @@ class TestSanity:
             "sandbox_observer.py",
             "model_kwargs.py",
         }
+        # The runner goes up without its .py suffix; the modules it imports keep theirs.
+        assert {call.args[1].rsplit("/", 1)[-1] for call in sandbox.upload.await_args_list} == {
+            "sandbox_runner",
+            "sandbox_observer.py",
+            "model_kwargs.py",
+        }
 
     async def test_seed_installs_hermes_when_it_does_not_import(self, monkeypatch) -> None:
         hermes = HermesAgent(config=_config(), server_client=MagicMock(spec=ServerClient))

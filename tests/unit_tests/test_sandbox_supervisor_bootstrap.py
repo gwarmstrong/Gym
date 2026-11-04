@@ -289,7 +289,7 @@ def _launch_shape(tmp_path: Path, shape: str, report: Path) -> list[str]:
         f"os.replace({str(report)!r} + '.part', {str(report)!r})\n"
         "time.sleep(60)\n"
     )
-    if shape == "venv":  # Hermes and Stirrup: <runtime>/venv/bin/python runner ...
+    if shape == "venv":  # An adapter runtime in a virtual environment: <venv>/bin/python runner ...
         venv = tmp_path / "runtime" / "venv"
         subprocess.run([_base_python(), "-m", "venv", "--without-pip", str(venv)], check=True)
         site = subprocess.run(
@@ -311,6 +311,8 @@ def _launch_shape(tmp_path: Path, shape: str, report: Path) -> list[str]:
         python.symlink_to(_base_python())
     if shape == "module":  # NOOA: <runtime>/python/bin/python3 -I -m <module> ...
         return [str(python), "-I", "-m", "cProfile", str(runner)]
+    if shape == "standalone":  # Hermes and Stirrup: <runtime>/python/bin/python3 -E -s runner ...
+        return [str(python), "-E", "-s", str(runner), "request.json"]
     return [str(python), "-I", str(runner), "request.json"]
 
 

@@ -438,7 +438,7 @@ Keep harness-specific response parsing and model and tool behavior in the adapte
 
 **1. Define the session state.** Subclass `AgentSessionState` and compose a `SandboxSession`. Implement two hooks:
 
-- `stage_activation` uploads the activation input and returns `SandboxCommand(argv=...)`. Install the runtime earlier, during seed. A CLI harness runs through the shared bash runner, whose name never mentions python. `stdlib_runner=True` exists only for Codex, whose standard-library runner still runs on the task image's Python: the runner then runs as `bin/gym-runner`, so a `pkill -f python3` in the task cannot stop it. Do not use it in a new adapter; it goes away once Codex no longer needs the task image's Python.
+- `stage_activation` uploads the activation input and returns `SandboxCommand(argv=...)`. Install the runtime earlier, during seed. A CLI harness runs through the shared bash runner, whose name never mentions python. A runner started from the adapter's own Python runtime, named by absolute path (Hermes, Stirrup, NOOA), runs as `gym-runner` without opting in: through `<venv>/bin/gym-runner` when the runtime is a venv, so it keeps the venv's packages, and through the session's `bin/gym-runner` otherwise. Upload such a runner without a `.py` suffix. `stdlib_runner=True` exists only for Codex, whose standard-library runner still runs on the task image's Python: the runner then runs as `bin/gym-runner`, so a `pkill -f python3` in the task cannot stop it. Do not use it in a new adapter; it goes away once Codex no longer needs the task image's Python.
 - `collect` copies artifacts to the Agent Server after harness termination is confirmed, including partial output from interrupted runs. It may run a bounded snapshot command, but it must not restart the harness. Bound the size of what it downloads: trim large logs inside the sandbox first and keep the tail with a truncation marker, for example the last 1 MiB of a runner log.
 
 ```python
@@ -539,7 +539,8 @@ All control files live under `session_dir`, and their names are defined in `supe
 | File | Writer and purpose |
 | --- | --- |
 | `process_supervisor.sh` | `SandboxSession` uploads it after staging input and before launch. |
-| `bin/gym-runner` | The launch shell links it to the binary behind the interpreter of a runner that sets `stdlib_runner`, and runs the runner through it, so the runner's process name doesn't mention python. If the link can't be made, the runner runs unchanged. |
+| `bin/gym-runner` | The launch shell links it to the binary behind the interpreter of a runner that sets `stdlib_runner`, or that starts with an absolute-path Python interpreter outside a venv, and runs the runner through it, so the runner's process name doesn't mention python. A runner whose interpreter is in a venv runs through `<venv>/bin/gym-runner` instead. If the link can't be made, the runner runs unchanged. |
+| `harness.argv` | The launch shell writes the harness argv here, each argument followed by a NUL, and the supervisor reads it with `--command-file`, so the supervisor's command line names neither the interpreter nor the harness. |
 | `launch.claim` | The launch or stop shell creates it atomically, either to claim execution or to fence a delayed launch. |
 | `supervisor.pid` | The launch shell records the PID that becomes the supervisor when the shell executes it. If the provider did not make that shell a process group leader, this process instead starts the supervisor in a new process group, passes `SIGTERM` on to it and exits with its status. |
 | `stop.request` | The stop shell writes this cancellation marker; the supervisor polls for it. A signal is not used, so the harness keeps the default `SIGTERM` disposition. |

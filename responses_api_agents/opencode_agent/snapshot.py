@@ -9,6 +9,8 @@ from collections.abc import Collection
 from contextlib import closing
 from pathlib import Path
 
+from responses_api_agents.opencode_agent.store_v2 import is_v2_store, project_v1
+
 
 LOG = logging.getLogger(__name__)
 
@@ -18,6 +20,11 @@ def snapshot(
 ) -> None:
     """Export root messages and retain the full session tree for observations."""
     previous_ids = set(previous_message_ids)
+    if is_v2_store(database):
+        # OpenCode 2.x keeps another schema; read it through the 1.x tables (see store_v2).
+        projected = directory / "opencode-v1.db"
+        project_v1(database, projected)
+        database = projected
     # Close both connections even on errors; the caller removes the directory afterwards.
     with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as source:
         source.row_factory = sqlite3.Row
@@ -67,12 +74,14 @@ def snapshot(
 
 def stored_sessions(database: Path) -> list[dict[str, str | None]]:
     """Every stored session's ID and parent ID, oldest first, as the owner's ``sessions.json`` lists them."""
+    table = "session_v2" if is_v2_store(database) else "session"
     with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as source:
-        rows = source.execute("select id, parent_id from session order by time_created, id").fetchall()
+        rows = source.execute(f"select id, parent_id from {table} order by time_created, id").fetchall()  # noqa: S608
     return [{"id": session_id, "parent_id": parent_id} for session_id, parent_id in rows]
 
 
 def stored_message_ids(database: Path) -> list[str]:
     """Every stored message's ID, oldest first."""
+    table = "session_message where type in ('user', 'synthetic', 'assistant')" if is_v2_store(database) else "message"
     with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as source:
-        return [row[0] for row in source.execute("select id from message order by time_created, id")]
+        return [row[0] for row in source.execute(f"select id from {table} order by time_created, id")]  # noqa: S608

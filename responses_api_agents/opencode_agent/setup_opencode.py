@@ -87,7 +87,8 @@ def installed_opencode_version() -> str | None:
     if out.returncode != 0:
         return None
     lines = (out.stdout.strip() or out.stderr.strip()).splitlines()
-    return lines[-1].strip() if lines else None
+    # OpenCode 1.x prints "1.17.11"; 2.x prints "opencode v2.2.5".
+    return lines[-1].strip().removeprefix("opencode ").removeprefix("v") if lines else None
 
 
 def _require_version(version: str) -> None:

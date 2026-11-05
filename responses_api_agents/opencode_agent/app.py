@@ -130,6 +130,7 @@ from responses_api_agents.opencode_agent.runtime import (
 from responses_api_agents.opencode_agent.sandbox import OpenCodeSandboxSession, cli_environment, format_error_message
 from responses_api_agents.opencode_agent.setup_opencode import ensure_opencode
 from responses_api_agents.opencode_agent.snapshot import stored_message_ids, stored_sessions
+from responses_api_agents.opencode_agent.store_v2 import is_v2_store, project_v1
 
 
 LOG = logging.getLogger(__name__)
@@ -251,6 +252,13 @@ case "$workdir/" in "${export_dir%/}"/*) overlap=1 ;; esac
 # inherits from ``build``, so request sampling goes to all of them. A name OpenCode does not define would add an
 # agent, so other versions refuse request sampling, as the adapter did before it applied any.
 _OPENCODE_AGENTS = {"1.17.11": ("build", "plan", "general", "explore", "compaction", "title", "summary")}
+
+
+def _opencode_2x(version: str) -> bool:
+    """Whether ``version`` is an OpenCode 2.x release, whose CLI, plugins and session store differ from 1.x."""
+    return version.split(".", 1)[0] == "2"
+
+
 # Isolation shared by every OpenCode process of a session: run, export and import.
 _OPENCODE_ISOLATION = {
     "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
@@ -593,7 +601,9 @@ class OpenCodeAgent(SimpleResponsesAPIAgent):
             env["OPENCODE_CONFIG_CONTENT"] = _serialize_replacement_config(overrides)
             prompt = instruction
 
-        cmd = [*self.config.command_parts, "run", "-m", self._effective_model(), "--dir", str(project_dir)]
+        cmd = [*self.config.command_parts, "run", "-m", self._effective_model()]
+        # OpenCode 2.x runs from the working directory and, without --standalone, shares a background server.
+        cmd.extend(["--standalone"] if _opencode_2x(self.config.opencode_version) else ["--dir", str(project_dir)])
         if self.config.system_prompt_mode == "replace":
             cmd.extend(["--agent", "build"])
         if self.config.thinking:
@@ -622,6 +632,10 @@ class OpenCodeAgent(SimpleResponsesAPIAgent):
                 LOG.warning("opencode exited %d: %s", proc.returncode, stderr.decode(errors="replace")[:500])
 
             db_path = data_home / "opencode" / "opencode.db"
+            if db_path.is_file() and is_v2_store(db_path):
+                projected = data_home / "opencode" / "v1-projection.db"
+                project_v1(db_path, projected)
+                db_path = projected
             invocation_id = rollout_id or f"opencode-{uuid4().hex}"
             output_items, usage = (
                 ([], {"input_tokens": 0, "output_tokens": 0})
@@ -1633,6 +1647,9 @@ class OpenCodeAgent(SimpleResponsesAPIAgent):
         # Owner-staged plugins load after Gym's; a plugin that matters must fail closed through its own receipt.
         config["plugin"].extend(PurePosixPath(path).as_uri() for path in self.config.plugins)
         command = [f"{state.runtime}/opencode", "run", "--format", "json", "--title", "NeMo Gym"]
+        if _opencode_2x(self.config.opencode_version):
+            # Without it, OpenCode 2.x starts a shared background server that outlives the run and its configuration.
+            command.append("--standalone")
         if self.config.system_prompt_mode == "replace":
             command.extend(["--agent", "build"])
         if self.config.thinking:

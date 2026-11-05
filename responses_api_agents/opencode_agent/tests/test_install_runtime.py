@@ -145,6 +145,24 @@ def test_cached_runtime_needs_no_package_installation(sandbox: tuple[Path, dict[
     assert not (root / "download.log").exists()
 
 
+def test_cached_opencode_2x_runtime_is_reused_by_its_reported_version(sandbox: tuple[Path, dict[str, str]]) -> None:
+    root, env = sandbox
+    (root / "runtime").mkdir()
+    # OpenCode 2.x prints its name and a "v" before the version.
+    (root / "runtime/opencode").write_text("#!/bin/bash\necho opencode v2.2.5\n")
+    (root / "runtime/opencode").chmod(0o755)
+    result = subprocess.run(
+        [str(root / "bin/bash"), str(root / "install.sh"), str(root / "runtime"), "2.2.5"],
+        env=env,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (root / "download.log").exists()
+
+
 # A cached binary that prints the right version and then fails is unhealthy.
 @pytest.mark.parametrize("probe", ["echo 1.17.10", "echo 1.17.11; exit 7"])
 def test_wrong_or_unhealthy_cached_version_is_not_reused(sandbox, probe):

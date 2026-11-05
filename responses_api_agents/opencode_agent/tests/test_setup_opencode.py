@@ -31,6 +31,7 @@ from responses_api_agents.opencode_agent.setup_opencode import ensure_opencode, 
         (" \n\t", "", 0, None),
         ("1.17.11", "", 1, None),
         ("1.17.10", "", 0, "1.17.10"),
+        ("opencode v2.2.5\n", "", 0, "2.2.5"),
     ],
 )
 def test_installed_version_handles_unavailable_output(stdout, stderr, returncode, expected) -> None:

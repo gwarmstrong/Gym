@@ -322,7 +322,7 @@ def opencode_tool_outcome(tool: Any, state: dict[str, Any]) -> OpenCodeToolOutco
         return OpenCodeToolOutcome("failed", "tool_error", output, None)
     if opencode_status != "completed":
         return OpenCodeToolOutcome("unknown", None, output, None)
-    if tool != "bash":
+    if tool not in ("bash", "shell"):
         return OpenCodeToolOutcome("completed", None, output, None)
     # Completion describes the tool lifecycle, not shell success: a timeout or an abort also completes it.
     exit_code = metadata.get("exit")

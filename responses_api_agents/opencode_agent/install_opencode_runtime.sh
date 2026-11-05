@@ -24,6 +24,13 @@ process_identity() {
     echo "$1"
   fi
 }
+# The version a binary reports: OpenCode 1.x prints "1.17.11", 2.x prints "opencode v2.2.5".
+reported_version() {
+  local reported
+  reported=$("$1" --version) || return 1
+  reported=${reported#opencode }
+  echo "${reported#v}"
+}
 staged=
 ticket=
 # However the installer exits, remove a partly staged binary and leave the installer queue.
@@ -90,7 +97,7 @@ if [ -n "$source_binary" ]; then
   fi
   chmod 755 "$staged"
   # The probe must exit successfully as well as print the exact version.
-  if ! actual=$("$staged" --version) || [ "$actual" != "$version" ]; then
+  if ! actual=$(reported_version "$staged") || [ "$actual" != "$version" ]; then
     echo 'OpenCode executable version mismatch' >&2
     exit 1
   fi
@@ -99,7 +106,7 @@ if [ -n "$source_binary" ]; then
 fi
 cached=false
 # A cached binary must also exit successfully, not only print the version.
-if [ -x "$runtime/opencode" ] && actual=$("$runtime/opencode" --version) && [ "$actual" = "$version" ]; then
+if [ -x "$runtime/opencode" ] && actual=$(reported_version "$runtime/opencode") && [ "$actual" = "$version" ]; then
   cached=true
 fi
 missing=()
@@ -145,7 +152,7 @@ fi
 curl -fSL --retry 3 "https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-linux-${arch}.tar.gz" -o "$runtime/opencode.tar.gz"
 tar -xzf "$runtime/opencode.tar.gz" -C "$runtime" opencode
 chmod +x "$runtime/opencode"
-actual=$("$runtime/opencode" --version)
+actual=$(reported_version "$runtime/opencode")
 if [ "$actual" != "$version" ]; then
   echo "OpenCode version mismatch: requested $version, found $actual" >&2
   exit 1

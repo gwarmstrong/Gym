@@ -182,3 +182,31 @@ async def test_invalid_session_never_falls_back_to_local(marker: str | None) -> 
             await agent.responses(request, NeMoGymResponseCreateParamsNonStreaming(input="task"))
     assert error.value.status_code == 409
     local.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("version", "flags"),
+    [("1.17.11", ["--dir"]), ("2.2.5", ["--standalone"])],
+)
+async def test_local_command_selects_the_cli_flags_of_the_configured_major(tmp_path, version, flags) -> None:
+    agent = OpenCodeAgent(
+        config=OpenCodeAgentConfig(
+            host="localhost",
+            port=8001,
+            name="opencode",
+            entrypoint="app.py",
+            opencode_version=version,
+            workspace_root=str(tmp_path),
+        ),
+        server_client=MagicMock(spec=ServerClient),
+    )
+    process = MagicMock(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+    with (
+        patch.object(agent, "_ensure_local_runtime", AsyncMock()),
+        patch("responses_api_agents.opencode_agent.app.asyncio.create_subprocess_exec", return_value=process) as run,
+        patch("responses_api_agents.opencode_agent.app.parse_opencode_session", return_value=([], {})),
+    ):
+        await agent._run_opencode("task", None, collect_observations=False)
+    argv = list(run.call_args.args)
+    # OpenCode 2.x has no --dir and, without --standalone, reuses a background server across rollouts.
+    assert [flag for flag in ("--dir", "--standalone") if flag in argv] == flags

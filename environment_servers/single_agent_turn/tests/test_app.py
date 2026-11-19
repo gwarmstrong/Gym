@@ -968,6 +968,59 @@ async def test_failed_agent_response_still_reaches_verification(reward: float, m
     assert result.result.response.status == "failed"
 
 
+@pytest.mark.parametrize("terminal", [None, False, True])
+async def test_verification_with_flat_row_failure_markers_is_a_handled_failure(terminal: bool | None) -> None:
+    # A Resources Server that reports an unscorable verification with flat-row markers (critpt_custom_grader does)
+    # must not hand rollout collection an episode result it refuses; the episode fails with the declared terminality.
+    environment, client = _environment_server()
+    verification = orjson.loads(client.responses[4].body)
+    verification.update(
+        reward=0.0,
+        mask_sample=True,
+        failure_kind="provider_unavailable",
+        failure_reason="execution_unknown",
+        _ng_failure_class="provider_unavailable",
+        _ng_failure_subcategory="execution_unknown",
+    )
+    if terminal is not None:
+        verification["_ng_failure_terminal"] = terminal
+    client.responses[4] = _Response(verification)
+
+    result = await environment.run_request(_request())
+
+    assert result.result is None
+    assert result.failure.stage == "verification"
+    assert result.failure.failure_kind == "provider_unavailable"
+    assert result.failure.terminal is (terminal is True)
+    assert "execution_unknown" in result.failure.failure_reason
+    assert result.failure.partial_response == NeMoGymResponse.model_validate(client.calls[4][2]["json"]["response"])
+    assert [path for _, path, _ in client.calls][-2:] == ["/verify", "/close_session"]
+
+
+@pytest.mark.parametrize(
+    "markers",
+    [
+        {"_ng_failure_class": "judge_failed", "failure_kind": "judge_unavailable"},
+        {
+            "_ng_failure_class": "verifier_error",
+            "_ng_failure_terminal": True,
+            "_ng_failure_counts_as_zero": True,
+            "failure_kind": "verifier_error",
+        },
+    ],
+)
+async def test_marked_verification_forms_rollout_collection_accepts_stay_results(markers: dict) -> None:
+    environment, client = _environment_server()
+    verification = orjson.loads(client.responses[4].body)
+    verification.update(reward=0.0, **markers)
+    client.responses[4] = _Response(verification)
+
+    result = await environment.run_request(_request())
+
+    assert result.failure is None
+    assert result.result.model_extra["_ng_failure_class"] == markers["_ng_failure_class"]
+
+
 @pytest.mark.parametrize("forward_agent_evidence", [None, False, True])
 @pytest.mark.parametrize("mask_sample", [False, True])
 @pytest.mark.parametrize("result_path", ["episode-request", "flat-adapter"])

@@ -28,6 +28,7 @@ from nemo_gym.agents import (
     confirmed_policy_response_timeout,
     verification_failure_fields,
 )
+from nemo_gym.artifacts.rollout_rows import NG_FAILURE_CLASS_KEY, NG_FAILURE_COUNTS_AS_ZERO_KEY, NG_TERMINAL_KEY
 from nemo_gym.client import get_response_json, raise_boundary_failure, rollout_path_prefix
 from nemo_gym.config import (
     SKIP_VERIFICATION_KEY_NAME,
@@ -41,6 +42,7 @@ from nemo_gym.config import (
     get_first_server_config_dict,
 )
 from nemo_gym.core import (
+    JUDGE_FAILED,
     MODEL_POLICY_RESPONSE_TIMEOUT,
     MODEL_REQUEST_ERROR,
     FailureBoundary,
@@ -403,6 +405,18 @@ class SingleAgentTurnEnvironmentServer(BaseEnvironmentServer[SingleAgentTurnRequ
             if skipped_reward is None:
                 async with self.checkpoint_step(request, handles.resources_verify_step_type):
                     verification = await self._verify(request, handles, agent_response, observations, trajectory)
+                legacy_failure = _legacy_verify_failure(verification)
+                if legacy_failure is not None:
+                    failure_kind, failure_reason, terminal = legacy_failure
+                    raise self._failure(
+                        stage="verification",
+                        failure_reason=failure_reason,
+                        terminal=terminal,
+                        failure_kind=failure_kind,
+                        partial_response=agent_response,
+                        agent_observations=observations,
+                        trajectory=trajectory,
+                    )
             else:
                 # The flag marks the fixed reward, so anything reading the result can tell it from a measured one.
                 verification = SingleAgentTurnResult.model_validate(
@@ -937,6 +951,30 @@ class SingleAgentTurnEnvironmentServer(BaseEnvironmentServer[SingleAgentTurnRequ
                 "verifier_invocations": verifier_invocations,
             },
         )
+
+
+def _legacy_verify_failure(verification: SingleAgentTurnResult) -> tuple[str, str, bool] | None:
+    """The failure a verify response declares with flat-row failure markers, as (kind, reason, terminal).
+
+    Some Resources Servers report an unscorable verification the way a flat `/run` row does: `_ng_failure_class`,
+    optionally `_ng_failure_terminal`, beside `mask_sample`. Those keys belong to rollout collection, which refuses
+    them in an episode result, so a result carrying them would end the whole run. Returned as a handled failure
+    instead, the episode keeps the meaning the flat row had: resume retries a nonterminal one and never a terminal one.
+    The two marked forms rollout collection accepts in a result (a judge failure and a final zero) stay results.
+    """
+    extra = verification.model_extra or {}
+    failure_class = extra.get(NG_FAILURE_CLASS_KEY)
+    if failure_class is None:
+        return None
+    kind = verification.failure_kind or extra.get("failure_kind")
+    terminal = extra.get(NG_TERMINAL_KEY) is True
+    if failure_class == JUDGE_FAILED and isinstance(kind, str) and kind.startswith("judge_"):
+        return None
+    if extra.get(NG_FAILURE_COUNTS_AS_ZERO_KEY) is True and terminal and isinstance(failure_class, str):
+        return None
+    failure_kind = kind if isinstance(kind, str) and kind else str(failure_class)
+    reason = verification.failure_reason or extra.get("failure_reason") or failure_kind
+    return failure_kind, f"Verification unscorable: {reason}", terminal
 
 
 def _cookies(response: Any) -> dict[str, str]:
